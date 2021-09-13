@@ -766,6 +766,14 @@ public class Lucene {
 		}
 	}
 
+	/**
+	 * 
+	 * @param entityName
+	 * @throws LuceneException
+	 * Lock function is invoked before performing any operation on a particular index. 
+	 * Throws an exception if the index is already locked in order to perform an operation
+	 */
+
 	@POST
 	@Path("lock/{entityName}")
 	public void lock(@PathParam("entityName") String entityName) throws LuceneException {
@@ -854,6 +862,13 @@ public class Lucene {
 		return paramQuery;
 	}
 
+	/**
+	 * 
+	 * @param entityName
+	 * @throws LuceneException
+	 * Unlock function is invoked after performing an operation on a particular index
+	 * Throws an exception when invoked before an index is locked
+	 */
 	@POST
 	@Path("unlock/{entityName}")
 	public void unlock(@PathParam("entityName") String entityName) throws LuceneException {
