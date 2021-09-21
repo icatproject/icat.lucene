@@ -202,6 +202,18 @@ public class Lucene {
 	}
 
 	/* if id is not null this is actually an update */
+	/**
+	 * 
+	 * @param request
+	 * @param entityName
+	 * @param when
+	 * @param parser
+	 * @param id
+	 * @throws LuceneException
+	 * @throws IOException
+	 * Creates a new document and it to Lucene index. 
+	 * If the id exists already an update operation is performed.
+	 */
 	private void add(HttpServletRequest request, String entityName, When when, JsonParser parser, Long id)
 			throws LuceneException, IOException {
 
