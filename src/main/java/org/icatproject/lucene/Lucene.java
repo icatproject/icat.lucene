@@ -363,6 +363,17 @@ public class Lucene {
 		}
 	}
 
+	/**
+	 * FSDirectory is the Base class for Directory implementations that store index files in the file system.
+	 * IndexWriter creates and maintains an index. 
+	 * 	Documents are added with addDocument and removed with deleteDocuments. 
+	 * 	A document can be updated with updateDocument (which just deletes and then adds the entire document). 
+	 * 	When finished adding, deleting and updating documents, close should be called.
+	 * 	IndexWriterConfig holds all the configuration that is used to create an IndexWriter. 
+	 * 	 The IndexWriterConfig.OpenMode option determines whether a new index is created, or whether an existing index is opened.
+	 *   Creates a new config with the specified analyser (IcatAnalyser in this case)
+	 * Once IndexWriter has been created with this object, changes to this object will not affect the IndexWriter instance.
+	 */
 	private IndexBucket createBucket(String name) {
 		try {
 			IndexBucket bucket = new IndexBucket();
