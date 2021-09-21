@@ -702,6 +702,12 @@ public class Lucene {
 		return isearcher;
 	}
 
+	/**
+	 * An Analyzer builds TokenStreams, which analyze text. It thus represents a policy for extracting index terms from text.
+	 * StandardQueryParser class is a helper that enables users to easily use the Lucene query parser.
+	 * This query configuration handler is used for almost every processor defined in the StandardQueryNodeProcessorPipeline processor pipeline. 
+	 *   It holds configuration methods that reproduce the configuration methods.
+	 */
 	@PostConstruct
 	private void init() {
 		logger.info("Initialising icat.lucene");
