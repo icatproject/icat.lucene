@@ -892,6 +892,16 @@ public class Lucene {
 		}
 	}
 
+	/**
+	 * 
+	 * @param name
+	 * @param search
+	 * @param maxResults
+	 * @param uid
+	 * @return
+	 * @throws IOException
+	 * Performs lucene index search and returns the resuts sorted by maxscore
+	 */
 	private String luceneSearchResult(String name, Search search, int maxResults, Long uid) throws IOException {
 		IndexSearcher isearcher = getSearcher(search.map, name);
 		logger.debug("To search in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
