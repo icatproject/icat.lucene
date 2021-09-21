@@ -145,6 +145,7 @@ public class Lucene {
 	 * @param request
 	 * @throws LuceneException
 	 * For each parser input updates/replaces a given document based on its id
+	 * indexWriter.deleteDocuments - Deletes the document(s) matching any of the provided queries. All given deletes are applied and flushed atomically at the same time.
 	 */
 	@POST
 	@Consumes(MediaType.APPLICATION_JSON)
@@ -211,8 +212,11 @@ public class Lucene {
 	 * @param id
 	 * @throws LuceneException
 	 * @throws IOException
-	 * Creates a new document and it to Lucene index. 
-	 * If the id exists already an update operation is performed.
+	 * Creates a new document and it to Lucene index.
+	 * Note that if an Exception is hit then the index will be consistent, but this document may not have been added.
+	 * Also, if the id exists already an update operation is performed.
+	 * Update document atomically deletes documents matching the provided delTerm and adds a block of documents with sequentially assigned document IDs, 
+	 * such that an external reader will see all or none of the documents.
 	 */
 	private void add(HttpServletRequest request, String entityName, When when, JsonParser parser, Long id)
 			throws LuceneException, IOException {
