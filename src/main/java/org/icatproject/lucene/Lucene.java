@@ -140,6 +140,12 @@ public class Lucene {
 	/**
 	 * Expect an array of things to add, update or delete to multiple documents
 	 */
+	/**
+	 * 
+	 * @param request
+	 * @throws LuceneException
+	 * For each parser input updates/replaces a given document based on its id
+	 */
 	@POST
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Path("modify")
