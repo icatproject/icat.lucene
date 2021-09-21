@@ -650,6 +650,15 @@ public class Lucene {
 		}
 	}
 
+	/**
+	 * 
+	 * @param uid
+	 * @throws LuceneException
+	 * IndexSearcher implements search over a single IndexReader.
+	 * SearcherManager is a utility class to safely share IndexSearcher instances across multiple threads, while periodically reopening. 
+	 * This class ensures each searcher is closed only once all threads have finished using it.
+	 * manager.release releases the searcher previously obtained with acquire()
+	 */
 	@DELETE
 	@Path("freeSearcher/{uid}")
 	public void freeSearcher(@PathParam("uid") Long uid) throws LuceneException {
@@ -726,6 +735,17 @@ public class Lucene {
 		}
 	}
 
+	/**
+	 * 
+	 * @param request
+	 * @param maxResults
+	 * @return
+	 * @throws LuceneException
+	 * Returns luceneSearchResult object containing search query, maxresults and userid
+	 * TermQuery matches documents containing a term. This may be combined with other terms with a BooleanQuery.
+	 * TermRangeQuery matches documents within an range of terms.
+	 * The query object is constructed based on the given input parameters
+	 */
 	@POST
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
