@@ -364,6 +364,12 @@ public class Lucene {
 
 	}
 
+	/**
+	 * 
+	 * @throws LuceneException
+	 * Commits all pending changes (added and deleted documents, segment merges, added indexes, etc.) to the index, and syncs all referenced index files.
+	 * Note that this does not wait for any running background merges to finish. 
+	 */
 	@POST
 	@Path("commit")
 	public void commit() throws LuceneException {
