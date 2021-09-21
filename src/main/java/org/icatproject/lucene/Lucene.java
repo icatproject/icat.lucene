@@ -682,6 +682,16 @@ public class Lucene {
 	/*
 	 * Need a new set of IndexSearchers for each search as identified by a uid
 	 */
+	/**
+	 * 
+	 * @param bucket
+	 * @param name
+	 * @return
+	 * @throws IOException
+	 * Returns indexsearcher instance if it is present in the bucket
+	 * Else creates a new indexsearcher for the given name parameter
+	 * 
+	 */
 	private IndexSearcher getSearcher(Map<String, IndexSearcher> bucket, String name) throws IOException {
 		IndexSearcher isearcher = bucket.get(name);
 		if (isearcher == null) {
