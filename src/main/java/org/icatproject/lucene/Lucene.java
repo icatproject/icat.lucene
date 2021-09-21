@@ -435,6 +435,17 @@ public class Lucene {
 		}
 	}
 
+	/**
+	 * 
+	 * @param request
+	 * @param maxResults
+	 * @return
+	 * @throws LuceneException
+	 * Returns luceneSearchResult object containing search query, maxresults and userid
+	 * TermQuery matches documents containing a term. This may be combined with other terms with a BooleanQuery.
+	 * TermRangeQuery matches documents within an range of terms.
+	 * The query object is constructed based on the given input parameters
+	 */
 	@POST
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
