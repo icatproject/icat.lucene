@@ -317,6 +317,11 @@ public class Lucene {
 	 * This is only for testing purposes. Other calls to the service will not
 	 * work properly while this operation is in progress.
 	 */
+	/**
+	 * 
+	 * @throws LuceneException
+	 * Clear bucket pointer, index and search history
+	 */
 	@POST
 	@Path("clear")
 	public void clear() throws LuceneException {
