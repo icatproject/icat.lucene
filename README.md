@@ -1,6 +1,6 @@
 # icat.lucene
 
-[![Build Status](https://travis-ci.org/icatproject/icat.lucene.svg?branch=master)](https://travis-ci.org/icatproject/icat.lucene)
+[![Build Status](https://github.com/icatproject/icat.lucene/workflows/CI%20Build/badge.svg?branch=master)](https://github.com/icatproject/icat.lucene/actions?query=workflow%3A%22CI+Build%22)
 
 General installation instructions are at http://www.icatproject.org/installation/component
 
