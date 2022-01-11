@@ -41,9 +41,10 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 
 import org.apache.lucene.document.Document;
-import org.apache.lucene.document.DoubleField;
+import org.apache.lucene.document.DoublePoint;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.SortedDocValuesField;
+import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.IndexWriter;
@@ -57,7 +58,6 @@ import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BooleanQuery.Builder;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
-import org.apache.lucene.search.NumericRangeQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.SearcherManager;
@@ -85,7 +85,7 @@ public class Lucene {
 	}
 
 	enum FieldType {
-		TextField, StringField, SortedDocValuesField, DoubleField
+		TextField, StringField, SortedDocValuesField, DoublePoint
 	}
 
 	private class IndexBucket {
@@ -238,7 +238,7 @@ public class Lucene {
 				long num = parser.getLong();
 				if (fType == FieldType.SortedDocValuesField) {
 					value = Long.toString(num);
-				} else if (fType == FieldType.DoubleField) {
+				} else if (fType == FieldType.DoublePoint) {
 					dvalue = parser.getBigDecimal().doubleValue();
 				} else {
 					throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
@@ -262,8 +262,11 @@ public class Lucene {
 					doc.add(new StringField(name, value, store));
 				} else if (fType == FieldType.SortedDocValuesField) {
 					doc.add(new SortedDocValuesField(name, new BytesRef(value)));
-				} else if (fType == FieldType.DoubleField) {
-					doc.add(new DoubleField(name, dvalue, store));
+				} else if (fType == FieldType.DoublePoint) {
+					doc.add(new DoublePoint(name, dvalue));
+					if (store == Store.YES) {
+						doc.add(new StoredField(name, dvalue));
+					}
 				}
 			} else if (ev == Event.END_ARRAY) {
 				if (id == null) {
@@ -353,7 +356,7 @@ public class Lucene {
 					bucket.indexWriter.commit();
 					if (cached != 0) {
 						logger.debug("Synch has committed {} {} changes to Lucene - now have {} documents indexed",
-								cached, entry.getKey(), bucket.indexWriter.numDocs());
+								cached, entry.getKey(), bucket.indexWriter.getDocStats().numDocs);
 					}
 					bucket.searcherManager.maybeRefreshBlocking();
 				}
@@ -379,10 +382,10 @@ public class Lucene {
 				iwriter.commit();
 				iwriter.deleteDocuments(new Term("dummy", "dummy"));
 				iwriter.commit();
-				logger.debug("Now have " + iwriter.numDocs() + " documents indexed");
+				logger.debug("Now have " + iwriter.getDocStats().numDocs + " documents indexed");
 			}
 			bucket.indexWriter = iwriter;
-			bucket.searcherManager = new SearcherManager(iwriter, false, null);
+			bucket.searcherManager = new SearcherManager(iwriter, false, false, null);
 			logger.debug("Bucket for {} is now ready", name);
 			return bucket;
 		} catch (Throwable e) {
@@ -791,7 +794,7 @@ public class Lucene {
 		TopDocs topDocs = search.lastDoc == null ? isearcher.search(search.query, maxResults)
 				: isearcher.searchAfter(search.lastDoc, search.query, maxResults);
 		ScoreDoc[] hits = topDocs.scoreDocs;
-		logger.debug("Hits " + topDocs.totalHits + " maxscore " + topDocs.getMaxScore());
+		logger.debug("Hits " + topDocs.totalHits + " maxscore " + topDocs.scoreDocs[0].score);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject();
@@ -850,8 +853,8 @@ public class Lucene {
 					new BytesRef(pUpperDateValue), true, true), Occur.MUST);
 
 		} else if (pLowerNumericValue != null && pUpperNumericValue != null) {
-			paramQuery.add(NumericRangeQuery.newDoubleRange("numericValue", pLowerNumericValue, pUpperNumericValue,
-					true, true), Occur.MUST);
+			paramQuery.add(DoublePoint.newRangeQuery("numericValue", pLowerNumericValue, pUpperNumericValue),
+					Occur.MUST);
 		}
 		return paramQuery;
 	}
@@ -870,7 +873,7 @@ public class Lucene {
 			bucket.indexWriter.commit();
 			if (cached != 0) {
 				logger.debug("Unlock has committed {} {} changes to Lucene - now have {} documents indexed", cached,
-						entityName, bucket.indexWriter.numDocs());
+						entityName, bucket.indexWriter.getDocStats().numDocs);
 			}
 			bucket.searcherManager.maybeRefreshBlocking();
 		} catch (IOException e) {
