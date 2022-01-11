@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
+import java.text.ParseException;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
@@ -638,7 +639,14 @@ public class Lucene {
 
 			parser = new StandardQueryParser();
 			StandardQueryConfigHandler qpConf = (StandardQueryConfigHandler) parser.getQueryConfigHandler();
-			qpConf.set(ConfigurationKeys.ANALYZER, analyzer);
+			try {
+				// Attempt init an Analyzer which injects synonyms for searching
+				qpConf.set(ConfigurationKeys.ANALYZER, new IcatSynonymAnalyzer());
+			} catch (IOException | ParseException e) {
+				// If synonym files cannot be parsed, default to using the same analyzer as for writing
+				logger.info("Synonym files not found, synonyms will not be injected");
+				qpConf.set(ConfigurationKeys.ANALYZER, analyzer);
+			}
 			qpConf.set(ConfigurationKeys.ALLOW_LEADING_WILDCARD, true);
 
 			timer = new Timer("LuceneCommitTimer");

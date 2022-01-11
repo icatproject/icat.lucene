@@ -39,6 +39,7 @@ import org.apache.lucene.search.join.ScoreMode;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.icatproject.lucene.IcatAnalyzer;
+import org.icatproject.lucene.IcatSynonymAnalyzer;
 import org.junit.Test;
 
 public class TestLucene {
@@ -68,6 +69,64 @@ public class TestLucene {
 
 		assertEquals(11, n);
 		assertEquals(" demo 1st number 2 all sing danc tokenstream api ad aardvark", newString);
+	}
+
+	/**
+	 * Test that IcatSynonymAnalyzer injects stems for alternate spellings and
+	 * chemical symbols for the elements 
+	 */
+	@Test
+	public void testIcatSynonymAnalyzer() throws Exception {
+		final String text = "hydrogen Helium LITHIUM be B NE ionisation";
+		int n = 0;
+		String newString = "";
+
+		try (Analyzer analyzer = new IcatSynonymAnalyzer()) {
+			TokenStream stream = analyzer.tokenStream("field", new StringReader(text));
+			CharTermAttribute termAtt = stream.addAttribute(CharTermAttribute.class);
+			try {
+				stream.reset(); // Curiously this is required
+				while (stream.incrementToken()) {
+					n++;
+					newString = newString + " " + termAtt;
+				}
+				stream.end();
+			} finally {
+				stream.close();
+			}
+		}
+
+		assertEquals(14, n);
+		assertEquals(" h hydrogen he helium li lithium beryllium be boron b neon ne ioniz ionis", newString);
+	}
+
+	/**
+	 * Test that we do not stop words that are chemical symbols (As At Be In No)
+	 * but otherwise filter out stop words
+	 */
+	@Test
+	public void testIcatAnalyzerStopWords() throws Exception {
+		final String text = "as at be in no that the their then there";
+		int n = 0;
+		String newString = "";
+
+		try (Analyzer analyzer = new IcatAnalyzer()) {
+			TokenStream stream = analyzer.tokenStream("field", new StringReader(text));
+			CharTermAttribute termAtt = stream.addAttribute(CharTermAttribute.class);
+			try {
+				stream.reset(); // Curiously this is required
+				while (stream.incrementToken()) {
+					n++;
+					newString = newString + " " + termAtt;
+				}
+				stream.end();
+			} finally {
+				stream.close();
+			}
+		}
+
+		assertEquals(5, n);
+		assertEquals(" as at be in no", newString);
 	}
 
 	@Test
