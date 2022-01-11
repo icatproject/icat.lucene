@@ -6,18 +6,20 @@ on:
     branches:
       - master
 
-strategy:
-  fail-fast: false
-  matrix:
-    version: [8]
-    experimental: [false]
-    include:
-      - version: 11
-        experimental: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 8
+            experimental: false
+        include:
+          - version: 11
+            experimental: true
+
     steps:
       - uses: actions/checkout@v2
       - name: Set up JDK
