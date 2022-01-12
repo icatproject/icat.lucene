@@ -8,6 +8,7 @@ import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Timer;
@@ -47,9 +48,20 @@ import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
+import org.apache.lucene.facet.FacetResult;
+import org.apache.lucene.facet.Facets;
+import org.apache.lucene.facet.FacetsCollector;
+import org.apache.lucene.facet.FacetsConfig;
+import org.apache.lucene.facet.LabelAndValue;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetField;
+import org.apache.lucene.facet.sortedset.DefaultSortedSetDocValuesReaderState;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetCounts;
+import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.ReaderManager;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.queryparser.flexible.core.QueryNodeException;
 import org.apache.lucene.queryparser.flexible.standard.StandardQueryParser;
 import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfigHandler;
 import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfigHandler.ConfigurationKeys;
@@ -85,18 +97,20 @@ public class Lucene {
 	}
 
 	enum FieldType {
-		TextField, StringField, SortedDocValuesField, DoublePoint
+		TextField, StringField, SortedDocValuesField, DoublePoint, SortedSetDocValuesFacetField,
 	}
 
 	private class IndexBucket {
 		private FSDirectory directory;
 		private IndexWriter indexWriter;
+		private ReaderManager readerManager;
 		private SearcherManager searcherManager;
 		private AtomicBoolean locked = new AtomicBoolean();
 	}
 
 	public class Search {
-		public Map<String, IndexSearcher> map;
+		public Map<String, DirectoryReader> readerMap;
+		public Map<String, IndexSearcher> searcherMap;
 		public Query query;
 		public ScoreDoc lastDoc;
 	}
@@ -108,6 +122,8 @@ public class Lucene {
 	private static final Logger logger = LoggerFactory.getLogger(Lucene.class);
 
 	private static final Marker fatal = MarkerFactory.getMarker("FATAL");
+
+	private final FacetsConfig facetsConfig = new FacetsConfig();
 
 	private java.nio.file.Path luceneDirectory;
 
@@ -262,6 +278,8 @@ public class Lucene {
 					doc.add(new StringField(name, value, store));
 				} else if (fType == FieldType.SortedDocValuesField) {
 					doc.add(new SortedDocValuesField(name, new BytesRef(value)));
+				} else if (fType == FieldType.SortedSetDocValuesFacetField) {
+					doc.add(new SortedSetDocValuesFacetField(name, value));
 				} else if (fType == FieldType.DoublePoint) {
 					doc.add(new DoublePoint(name, dvalue));
 					if (store == Store.YES) {
@@ -274,13 +292,13 @@ public class Lucene {
 						throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
 								"Lucene locked for " + entityName);
 					}
-					bucket.indexWriter.addDocument(doc);
+					bucket.indexWriter.addDocument(facetsConfig.build(doc));
 				} else {
 					if (bucket.locked.get()) {
 						throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
 								"Lucene locked for " + entityName);
 					}
-					bucket.indexWriter.updateDocument(new Term("id", id.toString()), doc);
+					bucket.indexWriter.updateDocument(new Term("id", id.toString()), facetsConfig.build(doc));
 				}
 				return;
 			} else {
@@ -358,6 +376,7 @@ public class Lucene {
 						logger.debug("Synch has committed {} {} changes to Lucene - now have {} documents indexed",
 								cached, entry.getKey(), bucket.indexWriter.getDocStats().numDocs);
 					}
+					bucket.readerManager.maybeRefreshBlocking();
 					bucket.searcherManager.maybeRefreshBlocking();
 				}
 			}
@@ -385,6 +404,7 @@ public class Lucene {
 				logger.debug("Now have " + iwriter.getDocStats().numDocs + " documents indexed");
 			}
 			bucket.indexWriter = iwriter;
+			bucket.readerManager = new ReaderManager(iwriter, false, false);
 			bucket.searcherManager = new SearcherManager(iwriter, false, false, null);
 			logger.debug("Bucket for {} is now ready", name);
 			return bucket;
@@ -404,56 +424,7 @@ public class Lucene {
 		Long uid = null;
 		try {
 			uid = bucketNum.getAndIncrement();
-			Search search = new Search();
-			searches.put(uid, search);
-			Map<String, IndexSearcher> map = new HashMap<>();
-			search.map = map;
-
-			try (JsonReader r = Json.createReader(request.getInputStream())) {
-				JsonObject o = r.readObject();
-				String userName = o.getString("user", null);
-
-				BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
-
-				if (userName != null) {
-					Query iuQuery = JoinUtil.createJoinQuery("investigation", false, "id",
-							new TermQuery(new Term("name", userName)), getSearcher(map, "InvestigationUser"),
-							ScoreMode.None);
-
-					Query invQuery = JoinUtil.createJoinQuery("id", false, "investigation", iuQuery,
-							getSearcher(map, "Investigation"), ScoreMode.None);
-
-					Query dsQuery = JoinUtil.createJoinQuery("id", false, "dataset", invQuery,
-							getSearcher(map, "Dataset"), ScoreMode.None);
-
-					theQuery.add(dsQuery, Occur.MUST);
-				}
-
-				String text = o.getString("text", null);
-				if (text != null) {
-					theQuery.add(parser.parse(text, "text"), Occur.MUST);
-				}
-
-				String lower = o.getString("lower", null);
-				String upper = o.getString("upper", null);
-				if (lower != null && upper != null) {
-					theQuery.add(new TermRangeQuery("date", new BytesRef(lower), new BytesRef(upper), true, true),
-							Occur.MUST);
-				}
-
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
-					IndexSearcher datafileParameterSearcher = getSearcher(map, "DatafileParameter");
-					for (JsonValue p : params) {
-						BooleanQuery.Builder paramQuery = parseParameter(p);
-						Query toQuery = JoinUtil.createJoinQuery("datafile", false, "id", paramQuery.build(),
-								datafileParameterSearcher, ScoreMode.None);
-						theQuery.add(toQuery, Occur.MUST);
-					}
-				}
-				search.query = maybeEmptyQuery(theQuery);
-			}
-
+			Search search = datafilesQuery(request, uid);
 			return luceneSearchResult("Datafile", search, maxResults, uid);
 		} catch (Exception e) {
 			logger.error("Error", e);
@@ -483,6 +454,79 @@ public class Lucene {
 	@POST
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
+	@Path("datafiles/facet")
+	public String datafilesFacet(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults,
+			@QueryParam("maxLabels") int maxLabels) throws LuceneException {
+		Long uid = null;
+		try {
+			uid = bucketNum.getAndIncrement();
+			Search search = datafilesQuery(request, uid);
+			return luceneFacetResult("Datafile", search, maxResults, maxLabels, uid);
+		} catch (Exception e) {
+			logger.error("Error", e);
+			freeSearcher(uid);
+			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
+		}
+
+	}
+
+	private Search datafilesQuery(HttpServletRequest request, Long uid) throws IOException, QueryNodeException {
+		Search search = new Search();
+		searches.put(uid, search);
+		Map<String, IndexSearcher> searcherMap = new HashMap<>();
+		Map<String, DirectoryReader> readerMap = new HashMap<>();
+		search.searcherMap = searcherMap;
+		search.readerMap = readerMap;
+		try (JsonReader r = Json.createReader(request.getInputStream())) {
+			JsonObject o = r.readObject();
+			String userName = o.getString("user", null);
+
+			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
+
+			if (userName != null) {
+				Query iuQuery = JoinUtil.createJoinQuery("investigation", false, "id",
+						new TermQuery(new Term("name", userName)), getSearcher(searcherMap, "InvestigationUser"),
+						ScoreMode.None);
+
+				Query invQuery = JoinUtil.createJoinQuery("id", false, "investigation", iuQuery,
+						getSearcher(searcherMap, "Investigation"), ScoreMode.None);
+
+				Query dsQuery = JoinUtil.createJoinQuery("id", false, "dataset", invQuery,
+						getSearcher(searcherMap, "Dataset"), ScoreMode.None);
+
+				theQuery.add(dsQuery, Occur.MUST);
+			}
+
+			String text = o.getString("text", null);
+			if (text != null) {
+				theQuery.add(parser.parse(text, "text"), Occur.MUST);
+			}
+
+			String lower = o.getString("lower", null);
+			String upper = o.getString("upper", null);
+			if (lower != null && upper != null) {
+				theQuery.add(new TermRangeQuery("date", new BytesRef(lower), new BytesRef(upper), true, true),
+						Occur.MUST);
+			}
+
+			if (o.containsKey("params")) {
+				JsonArray params = o.getJsonArray("params");
+				IndexSearcher datafileParameterSearcher = getSearcher(searcherMap, "DatafileParameter");
+				for (JsonValue p : params) {
+					BooleanQuery.Builder paramQuery = parseParameter(p);
+					Query toQuery = JoinUtil.createJoinQuery("datafile", false, "id", paramQuery.build(),
+							datafileParameterSearcher, ScoreMode.None);
+					theQuery.add(toQuery, Occur.MUST);
+				}
+			}
+			search.query = maybeEmptyQuery(theQuery);
+		}
+		return search;
+	}
+
+	@POST
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Produces(MediaType.APPLICATION_JSON)
 	@Path("datasets")
 	public String datasets(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults)
 			throws LuceneException {
@@ -490,54 +534,7 @@ public class Lucene {
 		Long uid = null;
 		try {
 			uid = bucketNum.getAndIncrement();
-			Search search = new Search();
-			searches.put(uid, search);
-			Map<String, IndexSearcher> map = new HashMap<>();
-			search.map = map;
-			try (JsonReader r = Json.createReader(request.getInputStream())) {
-				JsonObject o = r.readObject();
-				String userName = o.getString("user", null);
-
-				BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
-
-				if (userName != null) {
-
-					Query iuQuery = JoinUtil.createJoinQuery("investigation", false, "id",
-							new TermQuery(new Term("name", userName)), getSearcher(map, "InvestigationUser"),
-							ScoreMode.None);
-
-					Query invQuery = JoinUtil.createJoinQuery("id", false, "investigation", iuQuery,
-							getSearcher(map, "Investigation"), ScoreMode.None);
-
-					theQuery.add(invQuery, Occur.MUST);
-				}
-
-				String text = o.getString("text", null);
-				if (text != null) {
-					theQuery.add(parser.parse(text, "text"), Occur.MUST);
-				}
-
-				String lower = o.getString("lower", null);
-				String upper = o.getString("upper", null);
-				if (lower != null && upper != null) {
-					theQuery.add(new TermRangeQuery("startDate", new BytesRef(lower), new BytesRef(upper), true, true),
-							Occur.MUST);
-					theQuery.add(new TermRangeQuery("endDate", new BytesRef(lower), new BytesRef(upper), true, true),
-							Occur.MUST);
-				}
-
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
-					IndexSearcher datasetParameterSearcher = getSearcher(map, "DatasetParameter");
-					for (JsonValue p : params) {
-						BooleanQuery.Builder paramQuery = parseParameter(p);
-						Query toQuery = JoinUtil.createJoinQuery("dataset", false, "id", paramQuery.build(),
-								datasetParameterSearcher, ScoreMode.None);
-						theQuery.add(toQuery, Occur.MUST);
-					}
-				}
-				search.query = maybeEmptyQuery(theQuery);
-			}
+			Search search = datasetsQuery(request, uid);
 			return luceneSearchResult("Dataset", search, maxResults, uid);
 		} catch (Exception e) {
 			logger.error("Error", e);
@@ -565,6 +562,79 @@ public class Lucene {
 		}
 	}
 
+	@POST
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Produces(MediaType.APPLICATION_JSON)
+	@Path("datasets/facet")
+	public String datasetsFacet(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults,
+			@QueryParam("maxLabels") int maxLabels) throws LuceneException {
+		Long uid = null;
+		try {
+			uid = bucketNum.getAndIncrement();
+			Search search = datasetsQuery(request, uid);
+			return luceneFacetResult("Dataset", search, maxResults, maxLabels, uid);
+		} catch (Exception e) {
+			logger.error("Error", e);
+			freeSearcher(uid);
+			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
+		}
+
+	}
+
+	private Search datasetsQuery(HttpServletRequest request, Long uid) throws IOException, QueryNodeException {
+		Search search = new Search();
+		searches.put(uid, search);
+		Map<String, IndexSearcher> searcherMap = new HashMap<>();
+		Map<String, DirectoryReader> readerMap = new HashMap<>();
+		search.searcherMap = searcherMap;
+		search.readerMap = readerMap;
+		try (JsonReader r = Json.createReader(request.getInputStream())) {
+			JsonObject o = r.readObject();
+			String userName = o.getString("user", null);
+
+			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
+
+			if (userName != null) {
+
+				Query iuQuery = JoinUtil.createJoinQuery("investigation", false, "id",
+						new TermQuery(new Term("name", userName)), getSearcher(searcherMap, "InvestigationUser"),
+						ScoreMode.None);
+
+				Query invQuery = JoinUtil.createJoinQuery("id", false, "investigation", iuQuery,
+						getSearcher(searcherMap, "Investigation"), ScoreMode.None);
+
+				theQuery.add(invQuery, Occur.MUST);
+			}
+
+			String text = o.getString("text", null);
+			if (text != null) {
+				theQuery.add(parser.parse(text, "text"), Occur.MUST);
+			}
+
+			String lower = o.getString("lower", null);
+			String upper = o.getString("upper", null);
+			if (lower != null && upper != null) {
+				theQuery.add(new TermRangeQuery("startDate", new BytesRef(lower), new BytesRef(upper), true, true),
+						Occur.MUST);
+				theQuery.add(new TermRangeQuery("endDate", new BytesRef(lower), new BytesRef(upper), true, true),
+						Occur.MUST);
+			}
+
+			if (o.containsKey("params")) {
+				JsonArray params = o.getJsonArray("params");
+				IndexSearcher datasetParameterSearcher = getSearcher(searcherMap, "DatasetParameter");
+				for (JsonValue p : params) {
+					BooleanQuery.Builder paramQuery = parseParameter(p);
+					Query toQuery = JoinUtil.createJoinQuery("dataset", false, "id", paramQuery.build(),
+							datasetParameterSearcher, ScoreMode.None);
+					theQuery.add(toQuery, Occur.MUST);
+				}
+			}
+			search.query = maybeEmptyQuery(theQuery);
+		}
+		return search;
+	}
+
 	@PreDestroy
 	private void exit() {
 		logger.info("Closing down icat.lucene");
@@ -576,6 +646,7 @@ public class Lucene {
 		try {
 			for (Entry<String, IndexBucket> entry : indexBuckets.entrySet()) {
 				IndexBucket bucket = entry.getValue();
+				bucket.readerManager.close();
 				bucket.searcherManager.close();
 				bucket.indexWriter.commit();
 				bucket.indexWriter.close();
@@ -592,7 +663,18 @@ public class Lucene {
 	public void freeSearcher(@PathParam("uid") Long uid) throws LuceneException {
 		if (uid != null) { // May not be set for internal calls
 			logger.debug("Requesting freeSearcher {}", uid);
-			Map<String, IndexSearcher> search = searches.get(uid).map;
+			Map<String, IndexSearcher> search = searches.get(uid).searcherMap;
+			Map<String, DirectoryReader> read = searches.get(uid).readerMap;
+			for (Entry<String, DirectoryReader> entry : read.entrySet()) {
+				String name = entry.getKey();
+				DirectoryReader directoryReader = entry.getValue();
+				ReaderManager manager = indexBuckets.computeIfAbsent(name, k -> createBucket(k)).readerManager;
+				try {
+					manager.release(directoryReader);
+				} catch (IOException e) {
+					throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
+				}
+			}
 			for (Entry<String, IndexSearcher> entry : search.entrySet()) {
 				String name = entry.getKey();
 				IndexSearcher isearcher = entry.getValue();
@@ -605,6 +687,16 @@ public class Lucene {
 			}
 			searches.remove(uid);
 		}
+	}
+
+	private DirectoryReader getReader(Map<String, DirectoryReader> bucket, String name) throws IOException {
+		DirectoryReader directoryReader = bucket.get(name);
+		if (directoryReader == null) {
+			directoryReader = indexBuckets.computeIfAbsent(name, k -> createBucket(k)).readerManager.acquire();
+			bucket.put(name, directoryReader);
+			logger.debug("Remember searcher for {}", name);
+		}
+		return directoryReader;
 	}
 
 	/*
@@ -672,83 +764,13 @@ public class Lucene {
 		Long uid = null;
 		try {
 			uid = bucketNum.getAndIncrement();
-			Search search = new Search();
-			searches.put(uid, search);
-			Map<String, IndexSearcher> map = new HashMap<>();
-			search.map = map;
-			try (JsonReader r = Json.createReader(request.getInputStream())) {
-				JsonObject o = r.readObject();
-				String userName = o.getString("user", null);
-
-				BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
-
-				if (userName != null) {
-					Query iuQuery = JoinUtil.createJoinQuery("investigation", false, "id",
-							new TermQuery(new Term("name", userName)), getSearcher(map, "InvestigationUser"),
-							ScoreMode.None);
-					theQuery.add(iuQuery, Occur.MUST);
-				}
-
-				String text = o.getString("text", null);
-				if (text != null) {
-					theQuery.add(parser.parse(text, "text"), Occur.MUST);
-				}
-
-				String lower = o.getString("lower", null);
-				String upper = o.getString("upper", null);
-				if (lower != null && upper != null) {
-					theQuery.add(new TermRangeQuery("startDate", new BytesRef(lower), new BytesRef(upper), true, true),
-							Occur.MUST);
-					theQuery.add(new TermRangeQuery("endDate", new BytesRef(lower), new BytesRef(upper), true, true),
-							Occur.MUST);
-				}
-
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
-					IndexSearcher investigationParameterSearcher = getSearcher(map, "InvestigationParameter");
-
-					for (JsonValue p : params) {
-						BooleanQuery.Builder paramQuery = parseParameter(p);
-						Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", paramQuery.build(),
-								investigationParameterSearcher, ScoreMode.None);
-						theQuery.add(toQuery, Occur.MUST);
-					}
-				}
-
-				if (o.containsKey("samples")) {
-					JsonArray samples = o.getJsonArray("samples");
-					IndexSearcher sampleSearcher = getSearcher(map, "Sample");
-
-					for (JsonValue s : samples) {
-						JsonString sample = (JsonString) s;
-						BooleanQuery.Builder sampleQuery = new BooleanQuery.Builder();
-						sampleQuery.add(parser.parse(sample.getString(), "text"), Occur.MUST);
-						Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", sampleQuery.build(),
-								sampleSearcher, ScoreMode.None);
-						theQuery.add(toQuery, Occur.MUST);
-					}
-				}
-
-				String userFullName = o.getString("userFullName", null);
-				if (userFullName != null) {
-					BooleanQuery.Builder userFullNameQuery = new BooleanQuery.Builder();
-					userFullNameQuery.add(parser.parse(userFullName, "text"), Occur.MUST);
-					IndexSearcher investigationUserSearcher = getSearcher(map, "InvestigationUser");
-					Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", userFullNameQuery.build(),
-							investigationUserSearcher, ScoreMode.None);
-					theQuery.add(toQuery, Occur.MUST);
-				}
-
-				search.query = maybeEmptyQuery(theQuery);
-			}
-			logger.info("Query: {}", search.query);
+			Search search = investigationsQuery(request, uid);
 			return luceneSearchResult("Investigation", search, maxResults, uid);
 		} catch (Exception e) {
 			logger.error("Error", e);
 			freeSearcher(uid);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
-
 	}
 
 	@GET
@@ -770,6 +792,100 @@ public class Lucene {
 	}
 
 	@POST
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Produces(MediaType.APPLICATION_JSON)
+	@Path("investigations/facet")
+	public String investigationsFacet(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults,
+			@QueryParam("maxLabels") int maxLabels) throws LuceneException {
+		Long uid = null;
+		try {
+			uid = bucketNum.getAndIncrement();
+			Search search = investigationsQuery(request, uid);
+			return luceneFacetResult("Investigation", search, maxResults, maxLabels, uid);
+		} catch (Exception e) {
+			logger.error("Error", e);
+			freeSearcher(uid);
+			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
+		}
+	}
+
+	private Search investigationsQuery(HttpServletRequest request, Long uid) throws IOException, QueryNodeException {
+		Search search = new Search();
+		searches.put(uid, search);
+		Map<String, IndexSearcher> searcherMap = new HashMap<>();
+		Map<String, DirectoryReader> readerMap = new HashMap<>();
+		search.searcherMap = searcherMap;
+		search.readerMap = readerMap;
+		try (JsonReader r = Json.createReader(request.getInputStream())) {
+			JsonObject o = r.readObject();
+			String userName = o.getString("user", null);
+
+			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
+
+			if (userName != null) {
+				Query iuQuery = JoinUtil.createJoinQuery("investigation", false, "id",
+						new TermQuery(new Term("name", userName)), getSearcher(searcherMap, "InvestigationUser"),
+						ScoreMode.None);
+				theQuery.add(iuQuery, Occur.MUST);
+			}
+
+			String text = o.getString("text", null);
+			if (text != null) {
+				theQuery.add(parser.parse(text, "text"), Occur.MUST);
+			}
+
+			String lower = o.getString("lower", null);
+			String upper = o.getString("upper", null);
+			if (lower != null && upper != null) {
+				theQuery.add(new TermRangeQuery("startDate", new BytesRef(lower), new BytesRef(upper), true, true),
+						Occur.MUST);
+				theQuery.add(new TermRangeQuery("endDate", new BytesRef(lower), new BytesRef(upper), true, true),
+						Occur.MUST);
+			}
+
+			if (o.containsKey("params")) {
+				JsonArray params = o.getJsonArray("params");
+				IndexSearcher investigationParameterSearcher = getSearcher(searcherMap, "InvestigationParameter");
+
+				for (JsonValue p : params) {
+					BooleanQuery.Builder paramQuery = parseParameter(p);
+					Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", paramQuery.build(),
+							investigationParameterSearcher, ScoreMode.None);
+					theQuery.add(toQuery, Occur.MUST);
+				}
+			}
+
+			if (o.containsKey("samples")) {
+				JsonArray samples = o.getJsonArray("samples");
+				IndexSearcher sampleSearcher = getSearcher(searcherMap, "Sample");
+
+				for (JsonValue s : samples) {
+					JsonString sample = (JsonString) s;
+					BooleanQuery.Builder sampleQuery = new BooleanQuery.Builder();
+					sampleQuery.add(parser.parse(sample.getString(), "text"), Occur.MUST);
+					Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", sampleQuery.build(),
+							sampleSearcher, ScoreMode.None);
+					theQuery.add(toQuery, Occur.MUST);
+				}
+			}
+
+			String userFullName = o.getString("userFullName", null);
+			if (userFullName != null) {
+				BooleanQuery.Builder userFullNameQuery = new BooleanQuery.Builder();
+				userFullNameQuery.add(parser.parse(userFullName, "text"), Occur.MUST);
+				IndexSearcher investigationUserSearcher = getSearcher(searcherMap, "InvestigationUser");
+				Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", userFullNameQuery.build(),
+						investigationUserSearcher, ScoreMode.None);
+				theQuery.add(toQuery, Occur.MUST);
+			}
+
+			search.query = maybeEmptyQuery(theQuery);
+		}
+		logger.info("Query: {}", search.query);
+		return search;
+	}
+
+	@POST
 	@Path("lock/{entityName}")
 	public void lock(@PathParam("entityName") String entityName) throws LuceneException {
 		logger.info("Requesting lock of {} index", entityName);
@@ -785,8 +901,44 @@ public class Lucene {
 		}
 	}
 
+	private String luceneFacetResult(String name, Search search, int maxResults, int maxLabels, Long uid)
+			throws IOException {
+		IndexSearcher isearcher = getSearcher(search.searcherMap, name);
+		DirectoryReader directoryReader = getReader(search.readerMap, name);
+		logger.debug("To facet in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
+				search.lastDoc);
+		DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(directoryReader);
+		FacetsCollector facetsCollector = new FacetsCollector();
+		FacetsCollector.search(isearcher, search.query, maxResults, facetsCollector);
+		Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
+		List<FacetResult> results = facets.getAllDims(maxLabels);
+		logger.debug("Facets found for " + results.size() + " dimensions");
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		try (JsonGenerator gen = Json.createGenerator(baos)) {
+			gen.writeStartObject();
+			if (uid != null) {
+				gen.write("uid", uid);
+			}
+			gen.writeStartArray("facets"); // array of all facet dimensions
+			for (FacetResult result : results) {
+				gen.writeStartArray(result.dim); // array of labelValues for a given dimension
+				for (LabelAndValue labelValue : result.labelValues) {
+					gen.writeStartArray("labelValue"); // 2 element array of label, value
+					gen.write(labelValue.label);
+					gen.write(labelValue.value.longValue());
+					gen.writeEnd(); // array of label, value
+				}
+				gen.writeEnd(); // array of labelValues for a given dimension
+			}
+			gen.writeEnd(); // array of facet dimensions
+			gen.writeEnd(); // object
+		}
+		logger.debug("Json returned {}", baos.toString());
+		return baos.toString();
+	}
+
 	private String luceneSearchResult(String name, Search search, int maxResults, Long uid) throws IOException {
-		IndexSearcher isearcher = getSearcher(search.map, name);
+		IndexSearcher isearcher = getSearcher(search.searcherMap, name);
 		logger.debug("To search in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
 				search.lastDoc);
 		TopDocs topDocs = search.lastDoc == null ? isearcher.search(search.query, maxResults)
@@ -874,6 +1026,7 @@ public class Lucene {
 						entityName, bucket.indexWriter.getDocStats().numDocs);
 			}
 			bucket.searcherManager.maybeRefreshBlocking();
+			bucket.readerManager.maybeRefreshBlocking();
 		} catch (IOException e) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}

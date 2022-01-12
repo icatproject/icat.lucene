@@ -9,13 +9,23 @@ import java.io.StringReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field.Store;
+import org.apache.lucene.facet.FacetResult;
+import org.apache.lucene.facet.Facets;
+import org.apache.lucene.facet.FacetsCollector;
+import org.apache.lucene.facet.FacetsConfig;
+import org.apache.lucene.facet.LabelAndValue;
+import org.apache.lucene.facet.sortedset.DefaultSortedSetDocValuesReaderState;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetCounts;
+import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetField;
 import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.DirectoryReader;
@@ -44,6 +54,8 @@ import org.junit.Test;
 public class TestLucene {
 
 	static final int scale = (int) 1.0e5;
+
+	private final FacetsConfig facetsConfig = new FacetsConfig();
 
 	@Test
 	public void testIcatAnalyzer() throws Exception {
@@ -171,6 +183,57 @@ public class TestLucene {
 		System.out.println("Join tests took " + (System.currentTimeMillis() - start) + "ms");
 	}
 
+	@Test
+	public void testFacets() throws Exception {
+		Analyzer analyzer = new IcatAnalyzer();
+		IndexWriterConfig config;
+
+		Path tmpLuceneDir = Files.createTempDirectory("lucene");
+		FSDirectory investigationDirectory = FSDirectory.open(tmpLuceneDir.resolve("Investigation"));
+		config = new IndexWriterConfig(analyzer);
+		config.setOpenMode(OpenMode.CREATE);
+		IndexWriter investigationWriter = new IndexWriter(investigationDirectory, config);
+
+		// Add investigations with parameter and sample Facets
+		addFacetedInvestigation(investigationWriter, "inv1", 101, "parameter1", "sample1");
+		addFacetedInvestigation(investigationWriter, "inv2", 102, "parameter2", "sample2");
+
+		// Add investigations with only the parameter Facet
+		for (int i = 0; i < scale; i++) {
+			addFacetedInvestigation(investigationWriter, "extra" + i, 500 + i, "parameter0");
+		}
+
+		investigationWriter.close();
+
+		DirectoryReader directoryReader =  DirectoryReader.open(investigationDirectory);
+		IndexSearcher investigationSearcher = new IndexSearcher(directoryReader);
+		StandardQueryParser parser = new StandardQueryParser();
+		StandardQueryConfigHandler qpConf = (StandardQueryConfigHandler) parser.getQueryConfigHandler();
+		qpConf.set(ConfigurationKeys.ANALYZER, analyzer);
+		qpConf.set(ConfigurationKeys.ALLOW_LEADING_WILDCARD, true);
+		Map<String, Number> labelValuesParameter = new HashMap<>();
+		Map<String, Number> labelValuesSample = new HashMap<>();
+
+		long start = System.currentTimeMillis();
+
+		// Get Facets that are relevant for "inv1"
+		labelValuesParameter.put("parameter1", 1);
+		labelValuesSample.put("sample1", 1);
+		checkFacets(labelValuesParameter, labelValuesSample, "inv1", investigationSearcher, directoryReader, parser);
+		
+		// Get Facets that are relevant for "inv*"
+		labelValuesParameter.put("parameter2", 1);
+		labelValuesSample.put("sample2", 1);
+		checkFacets(labelValuesParameter, labelValuesSample, "inv*", investigationSearcher, directoryReader, parser);
+		
+		// Get all Facets for "*"
+		labelValuesParameter.put("parameter0", scale);
+		checkFacets(labelValuesParameter, labelValuesSample, "*", investigationSearcher, directoryReader, parser);
+
+		System.out.println("Facet tests took " + (System.currentTimeMillis() - start) + "ms");
+	}
+
+
 	private void checkDatafiles(List<Integer> dnums, String fname, String uname, IndexSearcher investigationSearcher,
 			IndexSearcher investigationUserSearcher, IndexSearcher datasetSearcher, IndexSearcher datafileSearcher,
 			StandardQueryParser parser) throws IOException, QueryNodeException {
@@ -253,6 +316,20 @@ public class TestLucene {
 
 	}
 
+	/* Facets */
+	private Facets get(String iname, IndexSearcher investigationSearcher, DirectoryReader directoryReader,
+			StandardQueryParser parser) throws QueryNodeException, IOException {
+		BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
+		if (iname != null) {
+			theQuery.add(parser.parse(iname, "name"), Occur.MUST);
+		}
+		DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(directoryReader);
+		FacetsCollector facetsCollector = new FacetsCollector();
+		FacetsCollector.search(investigationSearcher, theQuery.build(), 50, facetsCollector);
+		Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
+		return facets;
+	}
+
 	private void checkDatasets(List<Integer> dnums, String sname, String uname, IndexSearcher investigationSearcher,
 			IndexSearcher investigationUserSearcher, IndexSearcher datasetSearcher, StandardQueryParser parser)
 			throws IOException, QueryNodeException {
@@ -263,6 +340,31 @@ public class TestLucene {
 			assertNotNull(datasetSearcher.doc(hit.doc).get("id"));
 		}
 
+	}
+
+	private void checkFacets(Map<String, Number> labelValuesParameter, Map<String, Number> labelValuesSample,
+			String iname, IndexSearcher investigationSearcher, DirectoryReader directoryReader,
+			StandardQueryParser parser) throws QueryNodeException, IOException {
+		Facets facets = get(iname, investigationSearcher, directoryReader, parser);
+		List<FacetResult> results = facets.getAllDims(50);
+		if (labelValuesParameter.size() > 0) {
+			FacetResult parameterResult = results.remove(0);
+			assertEquals("Dimension", "parameter", parameterResult.dim);
+			assertEquals("Length", labelValuesParameter.size(), parameterResult.labelValues.length);
+			for (LabelAndValue labelValue : parameterResult.labelValues) {
+				assertTrue("Label", labelValuesParameter.containsKey(labelValue.label));
+				assertEquals("Value", labelValuesParameter.get(labelValue.label), labelValue.value);
+			}
+		}
+		if (labelValuesSample.size() > 0) {
+			FacetResult sampleResult = results.remove(0);
+			assertEquals("Dimension", "sample", sampleResult.dim);
+			assertEquals("Length", labelValuesSample.size(), sampleResult.labelValues.length);
+			for (LabelAndValue labelValue : sampleResult.labelValues) {
+				assertTrue("Label", labelValuesSample.containsKey(labelValue.label));
+				assertEquals("Value", labelValuesSample.get(labelValue.label), labelValue.value);
+			}
+		}
 	}
 
 	private void checkInvestigations(List<Integer> dnums, String iname, String uname,
@@ -283,6 +385,27 @@ public class TestLucene {
 		doc.add(new SortedDocValuesField("id", new BytesRef(Long.toString(iNum))));
 		doc.add(new StringField("id", Long.toString(iNum), Store.YES));
 		iwriter.addDocument(doc);
+	}
+
+	private void addFacetedInvestigation(IndexWriter iwriter, String name, long iNum, String parameterValue,
+			String sampleValue) throws IOException {
+		Document doc = new Document();
+		doc.add(new StringField("name", name, Store.NO));
+		doc.add(new SortedDocValuesField("id", new BytesRef(Long.toString(iNum))));
+		doc.add(new StringField("id", Long.toString(iNum), Store.YES));
+		doc.add(new SortedSetDocValuesFacetField("parameter", parameterValue));
+		doc.add(new SortedSetDocValuesFacetField("sample", sampleValue));
+		iwriter.addDocument(facetsConfig.build(doc));
+	}
+
+	private void addFacetedInvestigation(IndexWriter iwriter, String name, long iNum, String parameterValue)
+			throws IOException {
+		Document doc = new Document();
+		doc.add(new StringField("name", name, Store.NO));
+		doc.add(new SortedDocValuesField("id", new BytesRef(Long.toString(iNum))));
+		doc.add(new StringField("id", Long.toString(iNum), Store.YES));
+		doc.add(new SortedSetDocValuesFacetField("parameter", parameterValue));
+		iwriter.addDocument(facetsConfig.build(doc));
 	}
 
 	private void addInvestigationUser(IndexWriter iwriter, String name, long iNum) throws IOException {
