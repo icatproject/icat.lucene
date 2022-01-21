@@ -16,7 +16,6 @@ jobs:
         include:
           - version: 8
             experimental: false
-        include:
           - version: 11
             experimental: true
 
