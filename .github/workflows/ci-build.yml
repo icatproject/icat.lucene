@@ -1,0 +1,30 @@
+name: CI Build
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 8
+            experimental: false
+          - version: 11
+            experimental: true
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up JDK
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ matrix.version }}
+          distribution: 'temurin'
+      - name: Test with Maven
+        run: mvn test -B
