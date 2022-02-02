@@ -792,7 +792,13 @@ public class Lucene {
 		TopDocs topDocs = search.lastDoc == null ? isearcher.search(search.query, maxResults)
 				: isearcher.searchAfter(search.lastDoc, search.query, maxResults);
 		ScoreDoc[] hits = topDocs.scoreDocs;
-		logger.debug("Hits " + topDocs.totalHits + " maxscore " + topDocs.scoreDocs[0].score);
+		Float maxScore;
+		if (hits.length == 0) {
+			maxScore = Float.NaN;
+		} else {
+			maxScore = hits[0].score;
+		}
+		logger.debug("Hits " + topDocs.totalHits + " maxscore " + maxScore);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject();
