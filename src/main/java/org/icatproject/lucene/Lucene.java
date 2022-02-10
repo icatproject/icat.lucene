@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -733,6 +734,8 @@ public class Lucene {
 			qpConf.set(ConfigurationKeys.ANALYZER, analyzer);
 			qpConf.set(ConfigurationKeys.ALLOW_LEADING_WILDCARD, true);
 
+			facetsConfig.setMultiValued("sample", true);
+
 			timer = new Timer("LuceneCommitTimer");
 			timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
 
@@ -902,36 +905,55 @@ public class Lucene {
 	}
 
 	private String luceneFacetResult(String name, Search search, int maxResults, int maxLabels, Long uid)
-			throws IOException {
-		IndexSearcher isearcher = getSearcher(search.searcherMap, name);
-		DirectoryReader directoryReader = getReader(search.readerMap, name);
-		logger.debug("To facet in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
-				search.lastDoc);
-		DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(directoryReader);
-		FacetsCollector facetsCollector = new FacetsCollector();
-		FacetsCollector.search(isearcher, search.query, maxResults, facetsCollector);
-		Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
-		List<FacetResult> results = facets.getAllDims(maxLabels);
-		logger.debug("Facets found for " + results.size() + " dimensions");
+			throws IOException, IllegalStateException {
+		List<FacetResult> results;
+		if (maxResults <= 0 || maxLabels <= 0) {
+			// This will result in no Facets and a null pointer, so return early
+			logger.warn("No facets possible for maxResults={}, maxLabels={}, returning empty list", maxResults, maxLabels);
+			results = new ArrayList<>();
+		} else {
+			// TODO Consider either making this approach uniform, or whether to only do it for entities where we facet
+			DirectoryReader directoryReader = getReader(search.readerMap, name);
+			IndexSearcher isearcher = new IndexSearcher(directoryReader);
+			logger.debug("To facet in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
+					search.lastDoc);
+			try {
+				DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(directoryReader);
+				FacetsCollector facetsCollector = new FacetsCollector();
+				logger.debug("DR: {}, IS: {}", directoryReader, isearcher.getTopReaderContext());
+				FacetsCollector.search(isearcher, search.query, maxResults, facetsCollector);
+				Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
+				logger.debug("facets: {}, maxLabels: {}, maxResults: {}", facets, maxLabels, maxResults);
+				results = facets.getAllDims(maxLabels);
+			} catch (IllegalArgumentException e) {
+				// This can occur if no fields in the index have been faceted
+				logger.error("No facets found in index, resulting in error: " + e.getClass() + " " + e.getMessage());
+				results = new ArrayList<>();
+			} catch (IllegalStateException e) {
+				// This can occur if we do not create the IndexSearcher from the same DirectoryReader as we used to
+				// create the state
+				logger.error("IndexSearcher used is not based on the DirectoryReader used for facet counting: "
+					+ e.getClass() + " " + e.getMessage());
+				throw e;
+			}
+			logger.debug("Facets found for " + results.size() + " dimensions");
+		}
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject();
 			if (uid != null) {
 				gen.write("uid", uid);
 			}
-			gen.writeStartArray("facets"); // array of all facet dimensions
+			gen.writeStartObject("dimensions"); // object containing all facet dimensions
 			for (FacetResult result : results) {
-				gen.writeStartArray(result.dim); // array of labelValues for a given dimension
+				gen.writeStartObject(result.dim); // object containing labelValues for a given dimension
 				for (LabelAndValue labelValue : result.labelValues) {
-					gen.writeStartArray("labelValue"); // 2 element array of label, value
-					gen.write(labelValue.label);
-					gen.write(labelValue.value.longValue());
-					gen.writeEnd(); // array of label, value
+					gen.write(labelValue.label, labelValue.value.longValue());
 				}
-				gen.writeEnd(); // array of labelValues for a given dimension
+				gen.writeEnd(); // object containing labelValues
 			}
-			gen.writeEnd(); // array of facet dimensions
-			gen.writeEnd(); // object
+			gen.writeEnd(); // object containing dimensions
+			gen.writeEnd();
 		}
 		logger.debug("Json returned {}", baos.toString());
 		return baos.toString();
