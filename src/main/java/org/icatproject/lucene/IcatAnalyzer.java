@@ -25,7 +25,7 @@ public class IcatAnalyzer extends Analyzer {
 	static {
 		final List<String> stopWords =
 			Arrays.asList("a", "an", "and", "are", "but", "by", "for", "if", "into", "is",
-					"it", "not", "of", "on", "or", "such", "that", "the", "their", "then",
+					"it", "not", "on", "or", "such", "that", "the", "their", "then",
 					"there", "these", "they", "this", "to", "was", "will", "with");
 		final CharArraySet stopSet = new CharArraySet(stopWords, false);
 		SCIENTIFIC_STOP_WORDS_SET = CharArraySet.unmodifiableSet(stopSet);

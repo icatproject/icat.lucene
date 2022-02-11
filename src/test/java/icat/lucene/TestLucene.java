@@ -67,8 +67,8 @@ public class TestLucene {
 			}
 		}
 
-		assertEquals(11, n);
-		assertEquals(" demo 1st number 2 all sing danc tokenstream api ad aardvark", newString);
+		assertEquals(12, n);
+		assertEquals(" demo of 1st number 2 all sing danc tokenstream api ad aardvark", newString);
 	}
 
 	/**
@@ -77,7 +77,7 @@ public class TestLucene {
 	 */
 	@Test
 	public void testIcatSynonymAnalyzer() throws Exception {
-		final String text = "hydrogen Helium LITHIUM be B NE ionisation";
+		final String text = "hydrogen Helium LITHIUM be B NE ionisation TIME of FLIGHT technique ArPeS";
 		int n = 0;
 		String newString = "";
 
@@ -96,8 +96,8 @@ public class TestLucene {
 			}
 		}
 
-		assertEquals(14, n);
-		assertEquals(" h hydrogen he helium li lithium beryllium be boron b neon ne ioniz ionis", newString);
+		assertEquals(24, n);
+		assertEquals(" h hydrogen he helium li lithium beryllium be boron b neon ne ioniz ionis time tof of flight techniqu arp angl resolv photoemiss spectroscopi", newString);
 	}
 
 	/**
