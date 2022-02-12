@@ -37,6 +37,10 @@ def addToParents(
         for parent in parents:
             try:
                 relationships[parent]["children"].append(label)
+                # If the parent is equivalent to anything, also add label as a
+                # child of the equivalentParent
+                for equivalentParent in relationships[parent]["equivalent"]:
+                    relationships[equivalentParent]["children"].append(label)
                 addToParents(
                     relationships,
                     label,
@@ -70,7 +74,8 @@ def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
     """
     altIndices = []
     parentIndices = []
-    # equivalentIndices = []
+    equivalentIndices = []
+    equivalentPairs = {}
     relationships = {}
     with open(inputFile) as f:
         reader = csv.reader(f)
@@ -86,8 +91,8 @@ def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
                 altIndices.append(i)
             elif "Parent IRI" == header.strip():
                 parentIndices.append(i)
-            # elif "Equivalent" == header.strip():
-            #     equivalentIndices.append(i)
+            elif "Equivalent" == header.strip():
+                equivalentIndices.append(i)
 
         for entries in reader:
             try:
@@ -100,14 +105,11 @@ def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
             if label in relationships.keys():
                 raise ValueError(f"Duplicate entry for label {label}")
 
-            # relationships[label] = {
-            #     "alternatives": [],
-            #     "parents": [],
-            #     "equivalent": [],
-            #     "children": [],
-            # }
             relationships[label] = {
-                "alternatives": [], "parents": [], "children": []
+                "alternatives": [],
+                "parents": [],
+                "equivalent": [],
+                "children": [],
             }
             # classType = entries[classIndex]
             for altIndex in altIndices:
@@ -120,10 +122,19 @@ def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
                 parent = entries[parentIndex]
                 if parent != "":
                     relationships[label]["parents"].append(parent)
-            # for equivalentIndex in equivalentIndices:
-            #     equivalentLabel = entries[equivalentIndex]
-            #     if equivalentLabel != "":
-            #         relationships[label]["equivalent"].append(equivalentLabel)
+            for equivalentIndex in equivalentIndices:
+                equivalentLabel = entries[equivalentIndex]
+                if equivalentLabel != "":
+                    relationships[label]["equivalent"].append(equivalentLabel)
+                    equivalentPairs[equivalentLabel] = label
+
+    # If A is equivalent to B, then also set B equivalent to A
+    # This ensures they share all children
+    for key, value in equivalentPairs.items():
+        try:
+            relationships[key]["equivalent"].append(value)
+        except KeyError:
+            pass
 
     print(f"{len(relationships)} relationships found")
     for label, relationship in relationships.items():
@@ -137,14 +148,14 @@ def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
         if (len(relationship["alternatives"]) > 0
                 or len(relationship["children"]) > 0):
             leftHandSide = ", ".join(
-                set([label] + relationship["alternatives"])
+                sorted(set([label] + relationship["alternatives"]))
             )
             rightHandSide = ", ".join(
-                set(
+                sorted(set(
                     [label]
                     + relationship["alternatives"]
                     + relationship["children"]
-                )
+                ))
             )
             output += leftHandSide + " => " + rightHandSide + "\n"
 
