@@ -97,7 +97,7 @@ public class TestLucene {
 		}
 
 		assertEquals(24, n);
-		assertEquals(" h hydrogen he helium li lithium beryllium be boron b neon ne ioniz ionis time tof of flight techniqu arp angl resolv photoemiss spectroscopi", newString);
+		assertEquals(" h hydrogen he helium li lithium beryllium be boron b neon ne ioniz ionis tof time of flight techniqu arp angl resolv photoemiss spectroscopi", newString);
 	}
 
 	/**
