@@ -73,7 +73,6 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TermRangeQuery;
 import org.apache.lucene.search.TopDocs;
@@ -105,13 +104,11 @@ public class Lucene {
 		private FSDirectory directory;
 		private IndexWriter indexWriter;
 		private ReaderManager readerManager;
-		private SearcherManager searcherManager;
 		private AtomicBoolean locked = new AtomicBoolean();
 	}
 
 	public class Search {
 		public Map<String, DirectoryReader> readerMap;
-		public Map<String, IndexSearcher> searcherMap;
 		public Query query;
 		public ScoreDoc lastDoc;
 	}
@@ -378,7 +375,6 @@ public class Lucene {
 								cached, entry.getKey(), bucket.indexWriter.getDocStats().numDocs);
 					}
 					bucket.readerManager.maybeRefreshBlocking();
-					bucket.searcherManager.maybeRefreshBlocking();
 				}
 			}
 		} catch (IOException e) {
@@ -406,7 +402,6 @@ public class Lucene {
 			}
 			bucket.indexWriter = iwriter;
 			bucket.readerManager = new ReaderManager(iwriter, false, false);
-			bucket.searcherManager = new SearcherManager(iwriter, false, false, null);
 			logger.debug("Bucket for {} is now ready", name);
 			return bucket;
 		} catch (Throwable e) {
@@ -474,9 +469,9 @@ public class Lucene {
 	private Search datafilesQuery(HttpServletRequest request, Long uid) throws IOException, QueryNodeException {
 		Search search = new Search();
 		searches.put(uid, search);
-		Map<String, IndexSearcher> searcherMap = new HashMap<>();
+		// Map<String, IndexSearcher> searcherMap = new HashMap<>();
 		Map<String, DirectoryReader> readerMap = new HashMap<>();
-		search.searcherMap = searcherMap;
+		// search.searcherMap = searcherMap;
 		search.readerMap = readerMap;
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
@@ -486,14 +481,14 @@ public class Lucene {
 
 			if (userName != null) {
 				Query iuQuery = JoinUtil.createJoinQuery("investigation", false, "id",
-						new TermQuery(new Term("name", userName)), getSearcher(searcherMap, "InvestigationUser"),
+						new TermQuery(new Term("name", userName)), getSearcher(readerMap, "InvestigationUser"),
 						ScoreMode.None);
 
 				Query invQuery = JoinUtil.createJoinQuery("id", false, "investigation", iuQuery,
-						getSearcher(searcherMap, "Investigation"), ScoreMode.None);
+						getSearcher(readerMap, "Investigation"), ScoreMode.None);
 
 				Query dsQuery = JoinUtil.createJoinQuery("id", false, "dataset", invQuery,
-						getSearcher(searcherMap, "Dataset"), ScoreMode.None);
+						getSearcher(readerMap, "Dataset"), ScoreMode.None);
 
 				theQuery.add(dsQuery, Occur.MUST);
 			}
@@ -510,10 +505,10 @@ public class Lucene {
 						Occur.MUST);
 			}
 
-			if (o.containsKey("params")) {
-				JsonArray params = o.getJsonArray("params");
-				IndexSearcher datafileParameterSearcher = getSearcher(searcherMap, "DatafileParameter");
-				for (JsonValue p : params) {
+			if (o.containsKey("parameters")) {
+				JsonArray parameters = o.getJsonArray("parameters");
+				IndexSearcher datafileParameterSearcher = getSearcher(readerMap, "DatafileParameter");
+				for (JsonValue p : parameters) {
 					BooleanQuery.Builder paramQuery = parseParameter(p);
 					Query toQuery = JoinUtil.createJoinQuery("datafile", false, "id", paramQuery.build(),
 							datafileParameterSearcher, ScoreMode.None);
@@ -585,9 +580,7 @@ public class Lucene {
 	private Search datasetsQuery(HttpServletRequest request, Long uid) throws IOException, QueryNodeException {
 		Search search = new Search();
 		searches.put(uid, search);
-		Map<String, IndexSearcher> searcherMap = new HashMap<>();
 		Map<String, DirectoryReader> readerMap = new HashMap<>();
-		search.searcherMap = searcherMap;
 		search.readerMap = readerMap;
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
@@ -598,11 +591,11 @@ public class Lucene {
 			if (userName != null) {
 
 				Query iuQuery = JoinUtil.createJoinQuery("investigation", false, "id",
-						new TermQuery(new Term("name", userName)), getSearcher(searcherMap, "InvestigationUser"),
+						new TermQuery(new Term("name", userName)), getSearcher(readerMap, "InvestigationUser"),
 						ScoreMode.None);
 
 				Query invQuery = JoinUtil.createJoinQuery("id", false, "investigation", iuQuery,
-						getSearcher(searcherMap, "Investigation"), ScoreMode.None);
+						getSearcher(readerMap, "Investigation"), ScoreMode.None);
 
 				theQuery.add(invQuery, Occur.MUST);
 			}
@@ -621,10 +614,10 @@ public class Lucene {
 						Occur.MUST);
 			}
 
-			if (o.containsKey("params")) {
-				JsonArray params = o.getJsonArray("params");
-				IndexSearcher datasetParameterSearcher = getSearcher(searcherMap, "DatasetParameter");
-				for (JsonValue p : params) {
+			if (o.containsKey("parameters")) {
+				JsonArray parameters = o.getJsonArray("parameters");
+				IndexSearcher datasetParameterSearcher = getSearcher(readerMap, "DatasetParameter");
+				for (JsonValue p : parameters) {
 					BooleanQuery.Builder paramQuery = parseParameter(p);
 					Query toQuery = JoinUtil.createJoinQuery("dataset", false, "id", paramQuery.build(),
 							datasetParameterSearcher, ScoreMode.None);
@@ -648,7 +641,6 @@ public class Lucene {
 			for (Entry<String, IndexBucket> entry : indexBuckets.entrySet()) {
 				IndexBucket bucket = entry.getValue();
 				bucket.readerManager.close();
-				bucket.searcherManager.close();
 				bucket.indexWriter.commit();
 				bucket.indexWriter.close();
 				bucket.directory.close();
@@ -664,24 +656,13 @@ public class Lucene {
 	public void freeSearcher(@PathParam("uid") Long uid) throws LuceneException {
 		if (uid != null) { // May not be set for internal calls
 			logger.debug("Requesting freeSearcher {}", uid);
-			Map<String, IndexSearcher> search = searches.get(uid).searcherMap;
-			Map<String, DirectoryReader> read = searches.get(uid).readerMap;
-			for (Entry<String, DirectoryReader> entry : read.entrySet()) {
+			Map<String, DirectoryReader> readerMap = searches.get(uid).readerMap;
+			for (Entry<String, DirectoryReader> entry : readerMap.entrySet()) {
 				String name = entry.getKey();
 				DirectoryReader directoryReader = entry.getValue();
 				ReaderManager manager = indexBuckets.computeIfAbsent(name, k -> createBucket(k)).readerManager;
 				try {
 					manager.release(directoryReader);
-				} catch (IOException e) {
-					throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-				}
-			}
-			for (Entry<String, IndexSearcher> entry : search.entrySet()) {
-				String name = entry.getKey();
-				IndexSearcher isearcher = entry.getValue();
-				SearcherManager manager = indexBuckets.computeIfAbsent(name, k -> createBucket(k)).searcherManager;
-				try {
-					manager.release(isearcher);
 				} catch (IOException e) {
 					throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 				}
@@ -703,14 +684,8 @@ public class Lucene {
 	/*
 	 * Need a new set of IndexSearchers for each search as identified by a uid
 	 */
-	private IndexSearcher getSearcher(Map<String, IndexSearcher> bucket, String name) throws IOException {
-		IndexSearcher isearcher = bucket.get(name);
-		if (isearcher == null) {
-			isearcher = indexBuckets.computeIfAbsent(name, k -> createBucket(k)).searcherManager.acquire();
-			bucket.put(name, isearcher);
-			logger.debug("Remember searcher for {}", name);
-		}
-		return isearcher;
+	private IndexSearcher getSearcher(Map<String, DirectoryReader> bucket, String name) throws IOException {
+		return new IndexSearcher(getReader(bucket, name));
 	}
 
 	@PostConstruct
@@ -734,7 +709,8 @@ public class Lucene {
 			qpConf.set(ConfigurationKeys.ANALYZER, analyzer);
 			qpConf.set(ConfigurationKeys.ALLOW_LEADING_WILDCARD, true);
 
-			facetsConfig.setMultiValued("sample", true);
+			facetsConfig.setMultiValued("sampleName", true);
+			facetsConfig.setMultiValued("parameterName", true);
 
 			timer = new Timer("LuceneCommitTimer");
 			timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
@@ -815,9 +791,7 @@ public class Lucene {
 	private Search investigationsQuery(HttpServletRequest request, Long uid) throws IOException, QueryNodeException {
 		Search search = new Search();
 		searches.put(uid, search);
-		Map<String, IndexSearcher> searcherMap = new HashMap<>();
 		Map<String, DirectoryReader> readerMap = new HashMap<>();
-		search.searcherMap = searcherMap;
 		search.readerMap = readerMap;
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
@@ -827,7 +801,7 @@ public class Lucene {
 
 			if (userName != null) {
 				Query iuQuery = JoinUtil.createJoinQuery("investigation", false, "id",
-						new TermQuery(new Term("name", userName)), getSearcher(searcherMap, "InvestigationUser"),
+						new TermQuery(new Term("name", userName)), getSearcher(readerMap, "InvestigationUser"),
 						ScoreMode.None);
 				theQuery.add(iuQuery, Occur.MUST);
 			}
@@ -846,11 +820,11 @@ public class Lucene {
 						Occur.MUST);
 			}
 
-			if (o.containsKey("params")) {
-				JsonArray params = o.getJsonArray("params");
-				IndexSearcher investigationParameterSearcher = getSearcher(searcherMap, "InvestigationParameter");
+			if (o.containsKey("parameters")) {
+				JsonArray parameters = o.getJsonArray("parameters");
+				IndexSearcher investigationParameterSearcher = getSearcher(readerMap, "InvestigationParameter");
 
-				for (JsonValue p : params) {
+				for (JsonValue p : parameters) {
 					BooleanQuery.Builder paramQuery = parseParameter(p);
 					Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", paramQuery.build(),
 							investigationParameterSearcher, ScoreMode.None);
@@ -860,7 +834,7 @@ public class Lucene {
 
 			if (o.containsKey("samples")) {
 				JsonArray samples = o.getJsonArray("samples");
-				IndexSearcher sampleSearcher = getSearcher(searcherMap, "Sample");
+				IndexSearcher sampleSearcher = getSearcher(readerMap, "Sample");
 
 				for (JsonValue s : samples) {
 					JsonString sample = (JsonString) s;
@@ -876,7 +850,7 @@ public class Lucene {
 			if (userFullName != null) {
 				BooleanQuery.Builder userFullNameQuery = new BooleanQuery.Builder();
 				userFullNameQuery.add(parser.parse(userFullName, "text"), Occur.MUST);
-				IndexSearcher investigationUserSearcher = getSearcher(searcherMap, "InvestigationUser");
+				IndexSearcher investigationUserSearcher = getSearcher(readerMap, "InvestigationUser");
 				Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", userFullNameQuery.build(),
 						investigationUserSearcher, ScoreMode.None);
 				theQuery.add(toQuery, Occur.MUST);
@@ -912,7 +886,6 @@ public class Lucene {
 			logger.warn("No facets possible for maxResults={}, maxLabels={}, returning empty list", maxResults, maxLabels);
 			results = new ArrayList<>();
 		} else {
-			// TODO Consider either making this approach uniform, or whether to only do it for entities where we facet
 			DirectoryReader directoryReader = getReader(search.readerMap, name);
 			IndexSearcher isearcher = new IndexSearcher(directoryReader);
 			logger.debug("To facet in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
@@ -960,7 +933,7 @@ public class Lucene {
 	}
 
 	private String luceneSearchResult(String name, Search search, int maxResults, Long uid) throws IOException {
-		IndexSearcher isearcher = getSearcher(search.searcherMap, name);
+		IndexSearcher isearcher = getSearcher(search.readerMap, name);
 		logger.debug("To search in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
 				search.lastDoc);
 		TopDocs topDocs = search.lastDoc == null ? isearcher.search(search.query, maxResults)
@@ -1053,7 +1026,6 @@ public class Lucene {
 				logger.debug("Unlock has committed {} {} changes to Lucene - now have {} documents indexed", cached,
 						entityName, bucket.indexWriter.getDocStats().numDocs);
 			}
-			bucket.searcherManager.maybeRefreshBlocking();
 			bucket.readerManager.maybeRefreshBlocking();
 		} catch (IOException e) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
