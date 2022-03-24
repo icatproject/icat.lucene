@@ -1,13 +1,16 @@
 package org.icatproject.lucene;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Timer;
@@ -56,11 +59,14 @@ import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfi
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BooleanQuery.Builder;
+import org.apache.lucene.search.SortField.Type;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.SearcherManager;
+import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TermRangeQuery;
 import org.apache.lucene.search.TopDocs;
@@ -99,6 +105,7 @@ public class Lucene {
 		public Map<String, IndexSearcher> map;
 		public Query query;
 		public ScoreDoc lastDoc;
+		public Sort sort;
 	}
 
 	enum When {
@@ -398,7 +405,8 @@ public class Lucene {
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
 	@Path("datafiles")
-	public String datafiles(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults)
+	public String datafiles(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults,
+			@QueryParam("sort") String sort)
 			throws LuceneException {
 
 		Long uid = null;
@@ -408,6 +416,7 @@ public class Lucene {
 			searches.put(uid, search);
 			Map<String, IndexSearcher> map = new HashMap<>();
 			search.map = map;
+			search.sort = parseSort(sort);
 
 			try (JsonReader r = Json.createReader(request.getInputStream())) {
 				JsonObject o = r.readObject();
@@ -441,10 +450,10 @@ public class Lucene {
 							Occur.MUST);
 				}
 
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
+				if (o.containsKey("parameters")) {
+					JsonArray parameters = o.getJsonArray("parameters");
 					IndexSearcher datafileParameterSearcher = getSearcher(map, "DatafileParameter");
-					for (JsonValue p : params) {
+					for (JsonValue p : parameters) {
 						BooleanQuery.Builder paramQuery = parseParameter(p);
 						Query toQuery = JoinUtil.createJoinQuery("datafile", false, "id", paramQuery.build(),
 								datafileParameterSearcher, ScoreMode.None);
@@ -484,7 +493,8 @@ public class Lucene {
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
 	@Path("datasets")
-	public String datasets(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults)
+	public String datasets(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults,
+			@QueryParam("sort") String sort)
 			throws LuceneException {
 
 		Long uid = null;
@@ -494,6 +504,7 @@ public class Lucene {
 			searches.put(uid, search);
 			Map<String, IndexSearcher> map = new HashMap<>();
 			search.map = map;
+			search.sort = parseSort(sort);
 			try (JsonReader r = Json.createReader(request.getInputStream())) {
 				JsonObject o = r.readObject();
 				String userName = o.getString("user", null);
@@ -526,10 +537,10 @@ public class Lucene {
 							Occur.MUST);
 				}
 
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
+				if (o.containsKey("parameters")) {
+					JsonArray parameters = o.getJsonArray("parameters");
 					IndexSearcher datasetParameterSearcher = getSearcher(map, "DatasetParameter");
-					for (JsonValue p : params) {
+					for (JsonValue p : parameters) {
 						BooleanQuery.Builder paramQuery = parseParameter(p);
 						Query toQuery = JoinUtil.createJoinQuery("dataset", false, "id", paramQuery.build(),
 								datasetParameterSearcher, ScoreMode.None);
@@ -667,7 +678,8 @@ public class Lucene {
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
 	@Path("investigations")
-	public String investigations(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults)
+	public String investigations(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults,
+			@QueryParam("sort") String sort)
 			throws LuceneException {
 		Long uid = null;
 		try {
@@ -676,6 +688,7 @@ public class Lucene {
 			searches.put(uid, search);
 			Map<String, IndexSearcher> map = new HashMap<>();
 			search.map = map;
+			search.sort = parseSort(sort);
 			try (JsonReader r = Json.createReader(request.getInputStream())) {
 				JsonObject o = r.readObject();
 				String userName = o.getString("user", null);
@@ -703,11 +716,11 @@ public class Lucene {
 							Occur.MUST);
 				}
 
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
+				if (o.containsKey("parameters")) {
+					JsonArray parameters = o.getJsonArray("parameters");
 					IndexSearcher investigationParameterSearcher = getSearcher(map, "InvestigationParameter");
 
-					for (JsonValue p : params) {
+					for (JsonValue p : parameters) {
 						BooleanQuery.Builder paramQuery = parseParameter(p);
 						Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", paramQuery.build(),
 								investigationParameterSearcher, ScoreMode.None);
@@ -789,8 +802,15 @@ public class Lucene {
 		IndexSearcher isearcher = getSearcher(search.map, name);
 		logger.debug("To search in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
 				search.lastDoc);
-		TopDocs topDocs = search.lastDoc == null ? isearcher.search(search.query, maxResults)
-				: isearcher.searchAfter(search.lastDoc, search.query, maxResults);
+		TopDocs topDocs;
+		if (search.sort == null) {
+			// Use default score sorting
+			topDocs = search.lastDoc == null ? isearcher.search(search.query, maxResults)
+					: isearcher.searchAfter(search.lastDoc, search.query, maxResults);
+		} else {
+			topDocs = search.lastDoc == null ? isearcher.search(search.query, maxResults, search.sort)
+					: isearcher.searchAfter(search.lastDoc, search.query, maxResults, search.sort);
+		}
 		ScoreDoc[] hits = topDocs.scoreDocs;
 		Float maxScore;
 		if (hits.length == 0) {
@@ -810,7 +830,13 @@ public class Lucene {
 				Document doc = isearcher.doc(hit.doc);
 				gen.writeStartArray();
 				gen.write(Long.parseLong(doc.get("id")));
-				gen.write(hit.score);
+				Float score = hit.score;
+				if (score.equals(Float.NaN)) {
+					// If we didn't sort by score, then this will be NaN
+					gen.write(-1.);
+				} else {
+					gen.write(hit.score);
+				}
 				gen.writeEnd(); // array
 			}
 			gen.writeEnd(); // array results
@@ -847,9 +873,11 @@ public class Lucene {
 		String pLowerDateValue = parameter.getString("lowerDateValue", null);
 		String pUpperDateValue = parameter.getString("upperDateValue", null);
 		Double pLowerNumericValue = parameter.containsKey("lowerNumericValue")
-				? parameter.getJsonNumber("lowerNumericValue").doubleValue() : null;
+				? parameter.getJsonNumber("lowerNumericValue").doubleValue()
+				: null;
 		Double pUpperNumericValue = parameter.containsKey("upperNumericValue")
-				? parameter.getJsonNumber("upperNumericValue").doubleValue() : null;
+				? parameter.getJsonNumber("upperNumericValue").doubleValue()
+				: null;
 		if (pStringValue != null) {
 			paramQuery.add(new WildcardQuery(new Term("stringValue", pStringValue)), Occur.MUST);
 		} else if (pLowerDateValue != null && pUpperDateValue != null) {
@@ -861,6 +889,40 @@ public class Lucene {
 					Occur.MUST);
 		}
 		return paramQuery;
+	}
+
+	/**
+	 * Parses the String from the request into a Lucene Sort object. Multiple sort
+	 * criteria are supported, and will be applied in order.
+	 * 
+	 * @param sort String representation of a JSON object with the field(s) to sort
+	 *             as keys, and the direction ("asc" or "desc") as value(s).
+	 * @return Lucene Sort object
+	 * @throws LuceneException If the value for any key isn't "asc" or "desc"
+	 */
+	private Sort parseSort(String sort) throws LuceneException {
+		if (sort == null || sort.equals("")) {
+			return null;
+		}
+		try (JsonReader reader = Json.createReader(new ByteArrayInputStream(sort.getBytes()))) {
+			JsonObject object = reader.readObject();
+			List<SortField> fields = new ArrayList<>();
+			for (String key : object.keySet()) {
+				String order = object.getString(key);
+				Boolean reverse;
+				if (order.equals("asc")) {
+					reverse = false;
+				} else if (order.equals("desc")) {
+					reverse = true;
+				} else {
+					throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
+							"Sort order must be 'asc' or 'desc' but it was '" + order + "'");
+				}
+
+				fields.add(new SortField(key, Type.STRING, reverse));
+			}
+			return new Sort(fields.toArray(new SortField[0]));
+		}
 	}
 
 	@POST
