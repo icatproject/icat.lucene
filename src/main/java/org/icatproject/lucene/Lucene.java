@@ -1,14 +1,20 @@
 package org.icatproject.lucene;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Map.Entry;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -55,15 +61,21 @@ import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfi
 import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfigHandler.ConfigurationKeys;
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.BooleanQuery.Builder;
+import org.apache.lucene.search.SortField.Type;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.SearcherManager;
+import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TermRangeQuery;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopFieldDocs;
+import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.WildcardQuery;
 import org.apache.lucene.search.join.JoinUtil;
 import org.apache.lucene.search.join.ScoreMode;
@@ -98,7 +110,8 @@ public class Lucene {
 	public class Search {
 		public Map<String, IndexSearcher> map;
 		public Query query;
-		public ScoreDoc lastDoc;
+		public Sort sort;
+		public Set<String> fields = new HashSet<String>();
 	}
 
 	enum When {
@@ -206,7 +219,7 @@ public class Lucene {
 		String name = null;
 		String value = null;
 		Double dvalue = null;
-		Store store = Store.NO;
+		Store store = Store.YES;
 		Document doc = new Document();
 
 		parser.next(); // Skip the [
@@ -250,18 +263,26 @@ public class Lucene {
 				} else {
 					throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST, "Bad VALUE_TRUE " + attName);
 				}
+			} else if (ev == Event.VALUE_FALSE) {
+				if (attName == AttributeName.store) {
+					store = Store.NO;
+				} else {
+					throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST, "Bad VALUE_FALSE " + attName);
+				}
 			} else if (ev == Event.START_OBJECT) {
 				fType = null;
 				name = null;
 				value = null;
-				store = Store.NO;
+				store = Store.YES;
 			} else if (ev == Event.END_OBJECT) {
 				if (fType == FieldType.TextField) {
 					doc.add(new TextField(name, value, store));
 				} else if (fType == FieldType.StringField) {
 					doc.add(new StringField(name, value, store));
 				} else if (fType == FieldType.SortedDocValuesField) {
+					// Any field we sort on must be stored to enable searching after
 					doc.add(new SortedDocValuesField(name, new BytesRef(value)));
+					doc.add(new StoredField(name, value));
 				} else if (fType == FieldType.DoublePoint) {
 					doc.add(new DoublePoint(name, dvalue));
 					if (store == Store.YES) {
@@ -398,8 +419,8 @@ public class Lucene {
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
 	@Path("datafiles")
-	public String datafiles(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults)
-			throws LuceneException {
+	public String datafiles(@Context HttpServletRequest request, @QueryParam("search_after") String searchAfter,
+			@QueryParam("maxResults") int maxResults, @QueryParam("sort") String sort) throws LuceneException {
 
 		Long uid = null;
 		try {
@@ -408,10 +429,12 @@ public class Lucene {
 			searches.put(uid, search);
 			Map<String, IndexSearcher> map = new HashMap<>();
 			search.map = map;
+			search.sort = parseSort(sort);
 
 			try (JsonReader r = Json.createReader(request.getInputStream())) {
 				JsonObject o = r.readObject();
-				String userName = o.getString("user", null);
+				JsonObject query = o.getJsonObject("query");
+				String userName = query.getString("user", null);
 
 				BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
@@ -429,22 +452,22 @@ public class Lucene {
 					theQuery.add(dsQuery, Occur.MUST);
 				}
 
-				String text = o.getString("text", null);
+				String text = query.getString("text", null);
 				if (text != null) {
 					theQuery.add(parser.parse(text, "text"), Occur.MUST);
 				}
 
-				String lower = o.getString("lower", null);
-				String upper = o.getString("upper", null);
+				String lower = query.getString("lower", null);
+				String upper = query.getString("upper", null);
 				if (lower != null && upper != null) {
 					theQuery.add(new TermRangeQuery("date", new BytesRef(lower), new BytesRef(upper), true, true),
 							Occur.MUST);
 				}
 
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
+				if (query.containsKey("parameters")) {
+					JsonArray parameters = query.getJsonArray("parameters");
 					IndexSearcher datafileParameterSearcher = getSearcher(map, "DatafileParameter");
-					for (JsonValue p : params) {
+					for (JsonValue p : parameters) {
 						BooleanQuery.Builder paramQuery = parseParameter(p);
 						Query toQuery = JoinUtil.createJoinQuery("datafile", false, "id", paramQuery.build(),
 								datafileParameterSearcher, ScoreMode.None);
@@ -452,29 +475,15 @@ public class Lucene {
 					}
 				}
 				search.query = maybeEmptyQuery(theQuery);
+				if (o.containsKey("fields")) {
+					List<JsonString> jsonStrings = o.getJsonArray("fields").getValuesAs(JsonString.class);
+					jsonStrings.forEach((jsonString) -> search.fields.add(jsonString.getString()));
+				}
 			}
 
-			return luceneSearchResult("Datafile", search, maxResults, uid);
+			return luceneSearchResult("Datafile", search, searchAfter, maxResults, uid);
 		} catch (Exception e) {
 			logger.error("Error", e);
-			freeSearcher(uid);
-			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-		}
-	}
-
-	@GET
-	@Produces(MediaType.APPLICATION_JSON)
-	@Path("datafiles/{uid}")
-	public String datafilesAfter(@PathParam("uid") long uid, @QueryParam("maxResults") int maxResults)
-			throws LuceneException {
-		try {
-			Search search = searches.get(uid);
-			try {
-				return luceneSearchResult("Datafile", search, maxResults, null);
-			} catch (Exception e) {
-				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-			}
-		} catch (Exception e) {
 			freeSearcher(uid);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
@@ -484,8 +493,8 @@ public class Lucene {
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
 	@Path("datasets")
-	public String datasets(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults)
-			throws LuceneException {
+	public String datasets(@Context HttpServletRequest request, @QueryParam("search_after") String searchAfter,
+			@QueryParam("maxResults") int maxResults, @QueryParam("sort") String sort) throws LuceneException {
 
 		Long uid = null;
 		try {
@@ -494,9 +503,11 @@ public class Lucene {
 			searches.put(uid, search);
 			Map<String, IndexSearcher> map = new HashMap<>();
 			search.map = map;
+			search.sort = parseSort(sort);
 			try (JsonReader r = Json.createReader(request.getInputStream())) {
 				JsonObject o = r.readObject();
-				String userName = o.getString("user", null);
+				JsonObject query = o.getJsonObject("query");
+				String userName = query.getString("user", null);
 
 				BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
@@ -512,13 +523,13 @@ public class Lucene {
 					theQuery.add(invQuery, Occur.MUST);
 				}
 
-				String text = o.getString("text", null);
+				String text = query.getString("text", null);
 				if (text != null) {
 					theQuery.add(parser.parse(text, "text"), Occur.MUST);
 				}
 
-				String lower = o.getString("lower", null);
-				String upper = o.getString("upper", null);
+				String lower = query.getString("lower", null);
+				String upper = query.getString("upper", null);
 				if (lower != null && upper != null) {
 					theQuery.add(new TermRangeQuery("startDate", new BytesRef(lower), new BytesRef(upper), true, true),
 							Occur.MUST);
@@ -526,10 +537,10 @@ public class Lucene {
 							Occur.MUST);
 				}
 
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
+				if (query.containsKey("parameters")) {
+					JsonArray parameters = query.getJsonArray("parameters");
 					IndexSearcher datasetParameterSearcher = getSearcher(map, "DatasetParameter");
-					for (JsonValue p : params) {
+					for (JsonValue p : parameters) {
 						BooleanQuery.Builder paramQuery = parseParameter(p);
 						Query toQuery = JoinUtil.createJoinQuery("dataset", false, "id", paramQuery.build(),
 								datasetParameterSearcher, ScoreMode.None);
@@ -537,32 +548,18 @@ public class Lucene {
 					}
 				}
 				search.query = maybeEmptyQuery(theQuery);
+				if (o.containsKey("fields")) {
+					List<JsonString> jsonStrings = o.getJsonArray("fields").getValuesAs(JsonString.class);
+					jsonStrings.forEach((jsonString) -> search.fields.add(jsonString.getString()));
+				}
 			}
-			return luceneSearchResult("Dataset", search, maxResults, uid);
+			return luceneSearchResult("Dataset", search, searchAfter, maxResults, uid);
 		} catch (Exception e) {
 			logger.error("Error", e);
 			freeSearcher(uid);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 
-	}
-
-	@GET
-	@Produces(MediaType.APPLICATION_JSON)
-	@Path("datasets/{uid}")
-	public String datasetsAfter(@PathParam("uid") long uid, @QueryParam("maxResults") int maxResults)
-			throws LuceneException {
-		try {
-			Search search = searches.get(uid);
-			try {
-				return luceneSearchResult("Dataset", search, maxResults, null);
-			} catch (Exception e) {
-				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-			}
-		} catch (Exception e) {
-			freeSearcher(uid);
-			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-		}
 	}
 
 	@PreDestroy
@@ -667,8 +664,8 @@ public class Lucene {
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
 	@Path("investigations")
-	public String investigations(@Context HttpServletRequest request, @QueryParam("maxResults") int maxResults)
-			throws LuceneException {
+	public String investigations(@Context HttpServletRequest request, @QueryParam("search_after") String searchAfter,
+			@QueryParam("maxResults") int maxResults, @QueryParam("sort") String sort) throws LuceneException {
 		Long uid = null;
 		try {
 			uid = bucketNum.getAndIncrement();
@@ -676,9 +673,11 @@ public class Lucene {
 			searches.put(uid, search);
 			Map<String, IndexSearcher> map = new HashMap<>();
 			search.map = map;
+			search.sort = parseSort(sort);
 			try (JsonReader r = Json.createReader(request.getInputStream())) {
 				JsonObject o = r.readObject();
-				String userName = o.getString("user", null);
+				JsonObject query = o.getJsonObject("query");
+				String userName = query.getString("user", null);
 
 				BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
@@ -689,13 +688,13 @@ public class Lucene {
 					theQuery.add(iuQuery, Occur.MUST);
 				}
 
-				String text = o.getString("text", null);
+				String text = query.getString("text", null);
 				if (text != null) {
 					theQuery.add(parser.parse(text, "text"), Occur.MUST);
 				}
 
-				String lower = o.getString("lower", null);
-				String upper = o.getString("upper", null);
+				String lower = query.getString("lower", null);
+				String upper = query.getString("upper", null);
 				if (lower != null && upper != null) {
 					theQuery.add(new TermRangeQuery("startDate", new BytesRef(lower), new BytesRef(upper), true, true),
 							Occur.MUST);
@@ -703,11 +702,11 @@ public class Lucene {
 							Occur.MUST);
 				}
 
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
+				if (query.containsKey("parameters")) {
+					JsonArray parameters = query.getJsonArray("parameters");
 					IndexSearcher investigationParameterSearcher = getSearcher(map, "InvestigationParameter");
 
-					for (JsonValue p : params) {
+					for (JsonValue p : parameters) {
 						BooleanQuery.Builder paramQuery = parseParameter(p);
 						Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", paramQuery.build(),
 								investigationParameterSearcher, ScoreMode.None);
@@ -715,8 +714,8 @@ public class Lucene {
 					}
 				}
 
-				if (o.containsKey("samples")) {
-					JsonArray samples = o.getJsonArray("samples");
+				if (query.containsKey("samples")) {
+					JsonArray samples = query.getJsonArray("samples");
 					IndexSearcher sampleSearcher = getSearcher(map, "Sample");
 
 					for (JsonValue s : samples) {
@@ -729,7 +728,7 @@ public class Lucene {
 					}
 				}
 
-				String userFullName = o.getString("userFullName", null);
+				String userFullName = query.getString("userFullName", null);
 				if (userFullName != null) {
 					BooleanQuery.Builder userFullNameQuery = new BooleanQuery.Builder();
 					userFullNameQuery.add(parser.parse(userFullName, "text"), Occur.MUST);
@@ -740,33 +739,19 @@ public class Lucene {
 				}
 
 				search.query = maybeEmptyQuery(theQuery);
+				if (o.containsKey("fields")) {
+					List<JsonString> jsonStrings = o.getJsonArray("fields").getValuesAs(JsonString.class);
+					jsonStrings.forEach((jsonString) -> search.fields.add(jsonString.getString()));
+				}
 			}
 			logger.info("Query: {}", search.query);
-			return luceneSearchResult("Investigation", search, maxResults, uid);
+			return luceneSearchResult("Investigation", search, searchAfter, maxResults, uid);
 		} catch (Exception e) {
 			logger.error("Error", e);
 			freeSearcher(uid);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 
-	}
-
-	@GET
-	@Produces(MediaType.APPLICATION_JSON)
-	@Path("investigations/{uid}")
-	public String investigationsAfter(@PathParam("uid") long uid, @QueryParam("maxResults") int maxResults)
-			throws LuceneException {
-		try {
-			Search search = searches.get(uid);
-			try {
-				return luceneSearchResult("Investigation", search, maxResults, null);
-			} catch (Exception e) {
-				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-			}
-		} catch (Exception e) {
-			freeSearcher(uid);
-			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-		}
 	}
 
 	@POST
@@ -785,33 +770,91 @@ public class Lucene {
 		}
 	}
 
-	private String luceneSearchResult(String name, Search search, int maxResults, Long uid) throws IOException {
+	private String luceneSearchResult(String name, Search search, String searchAfter, int maxResults, Long uid)
+			throws IOException, LuceneException {
 		IndexSearcher isearcher = getSearcher(search.map, name);
 		logger.debug("To search in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
-				search.lastDoc);
-		TopDocs topDocs = search.lastDoc == null ? isearcher.search(search.query, maxResults)
-				: isearcher.searchAfter(search.lastDoc, search.query, maxResults);
-		ScoreDoc[] hits = topDocs.scoreDocs;
-		logger.debug("Hits " + topDocs.totalHits + " maxscore " + topDocs.scoreDocs[0].score);
+				searchAfter);
+		FieldDoc searchAfterDoc = parseSearchAfter(searchAfter);
+		ScoreDoc[] hits;
+		TotalHits totalHits;
+		SortField[] fields = null;
+		if (search.sort == null) {
+			// Use default score sorting
+			TopDocs topDocs;
+			topDocs = searchAfterDoc == null ? isearcher.search(search.query, maxResults)
+					: isearcher.searchAfter(searchAfterDoc, search.query, maxResults);
+			hits = topDocs.scoreDocs;
+			totalHits = topDocs.totalHits;
+		} else {
+			// Use specified sorting
+			TopFieldDocs topFieldDocs;
+			topFieldDocs = searchAfterDoc == null ? isearcher.search(search.query, maxResults, search.sort)
+					: isearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, false);
+			hits = topFieldDocs.scoreDocs;
+			totalHits = topFieldDocs.totalHits;
+			fields = topFieldDocs.fields;
+		}
+		Float maxScore;
+		if (hits.length == 0) {
+			maxScore = Float.NaN;
+		} else {
+			maxScore = hits[0].score;
+		}
+		logger.debug("Hits " + totalHits + " maxscore " + maxScore);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject();
-			if (uid != null) {
-				gen.write("uid", uid);
-			}
 			gen.writeStartArray("results");
 			for (ScoreDoc hit : hits) {
 				Document doc = isearcher.doc(hit.doc);
-				gen.writeStartArray();
-				gen.write(Long.parseLong(doc.get("id")));
-				gen.write(hit.score);
-				gen.writeEnd(); // array
+				gen.writeStartObject().write("id", Long.parseLong(doc.get("id")));
+				Float score = hit.score;
+				if (!score.equals(Float.NaN)) {
+					gen.write("score", hit.score);
+				}
+				gen.writeStartObject("source");
+				doc.forEach((field) -> {
+					if (search.fields.contains(field.name())) {
+						if (field.stringValue() != null) {
+							gen.write(field.name(), field.stringValue());
+						} else if (field.numericValue() != null) {
+							gen.write(field.name(), field.numericValue().doubleValue());
+						}
+					}
+				});
+				gen.writeEnd();
+				gen.writeEnd(); // result object
 			}
 			gen.writeEnd(); // array results
+			if (hits.length == maxResults) {
+				ScoreDoc lastDoc = hits[hits.length - 1];
+				gen.writeStartObject("search_after").write("doc", lastDoc.doc).write("shardIndex", lastDoc.shardIndex);
+				float lastScore = lastDoc.score;
+				if (!Float.isNaN(lastScore)) {
+					gen.write("score", lastScore);
+				}
+				if (fields != null) {
+					Document lastDocument = isearcher.doc(lastDoc.doc);
+					gen.writeStartArray("fields");
+					for (SortField sortField : fields) {
+						Type type = sortField.getType();
+						if (type.equals(Type.STRING)) {
+							String lastValue = lastDocument.get(sortField.getField());
+							if (lastValue == null) {
+								throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Field "
+										+ sortField.getField()
+										+ " used for sorting was not present on the Lucene Document; all sortable fields must also be stored.");
+							}
+							gen.write(lastValue);
+						}
+					}
+					gen.writeEnd();
+				}
+				gen.writeEnd();
+			}
 			gen.writeEnd(); // object
 		}
-
-		search.lastDoc = hits.length == 0 ? null : hits[hits.length - 1];
 		logger.debug("Json returned {}", baos.toString());
 		return baos.toString();
 	}
@@ -841,9 +884,11 @@ public class Lucene {
 		String pLowerDateValue = parameter.getString("lowerDateValue", null);
 		String pUpperDateValue = parameter.getString("upperDateValue", null);
 		Double pLowerNumericValue = parameter.containsKey("lowerNumericValue")
-				? parameter.getJsonNumber("lowerNumericValue").doubleValue() : null;
+				? parameter.getJsonNumber("lowerNumericValue").doubleValue()
+				: null;
 		Double pUpperNumericValue = parameter.containsKey("upperNumericValue")
-				? parameter.getJsonNumber("upperNumericValue").doubleValue() : null;
+				? parameter.getJsonNumber("upperNumericValue").doubleValue()
+				: null;
 		if (pStringValue != null) {
 			paramQuery.add(new WildcardQuery(new Term("stringValue", pStringValue)), Occur.MUST);
 		} else if (pLowerDateValue != null && pUpperDateValue != null) {
@@ -855,6 +900,73 @@ public class Lucene {
 					Occur.MUST);
 		}
 		return paramQuery;
+	}
+
+	/**
+	 * Parses the String from the request into a Lucene Sort object. Multiple sort
+	 * criteria are supported, and will be applied in order.
+	 * 
+	 * @param sort String representation of a JSON object with the field(s) to sort
+	 *             as keys, and the direction ("asc" or "desc") as value(s).
+	 * @return Lucene Sort object
+	 * @throws LuceneException If the value for any key isn't "asc" or "desc"
+	 */
+	private Sort parseSort(String sort) throws LuceneException {
+		if (sort == null || sort.equals("")) {
+			return null;
+		}
+		try (JsonReader reader = Json.createReader(new ByteArrayInputStream(sort.getBytes()))) {
+			JsonObject object = reader.readObject();
+			List<SortField> fields = new ArrayList<>();
+			for (String key : object.keySet()) {
+				String order = object.getString(key);
+				Boolean reverse;
+				if (order.equals("asc")) {
+					reverse = false;
+				} else if (order.equals("desc")) {
+					reverse = true;
+				} else {
+					throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
+							"Sort order must be 'asc' or 'desc' but it was '" + order + "'");
+				}
+
+				fields.add(new SortField(key, Type.STRING, reverse));
+			}
+			return new Sort(fields.toArray(new SortField[0]));
+		}
+	}
+
+	/**
+	 * Parses a Lucene ScoreDoc to be "searched after" from a String representation
+	 * of a JSON array.
+	 * 
+	 * @param searchAfter String representation of a JSON object containing the
+	 *                    document id or "doc" (String), score ("float") in that
+	 *                    order.
+	 * @return FieldDoc object built from the provided String, or null if
+	 *         searchAfter was itself null or an empty String.
+	 */
+	private FieldDoc parseSearchAfter(String searchAfter) {
+		if (searchAfter != null && !searchAfter.equals("")) {
+			logger.debug("Attempting to parseSearchAfter from {}", searchAfter);
+			JsonReader reader = Json.createReader(new StringReader(searchAfter));
+			JsonObject object = reader.readObject();
+			int doc = object.getInt("doc");
+			int shardIndex = object.getInt("shardIndex");
+			float score = Float.NaN;
+			List<BytesRef> fields = new ArrayList<>();
+			if (object.containsKey("score")) {
+				score = object.getJsonNumber("score").bigDecimalValue().floatValue();
+			}
+			if (object.containsKey("fields")) {
+				List<JsonString> jsonStrings = object.getJsonArray("fields").getValuesAs(JsonString.class);
+				for (JsonString jsonString : jsonStrings) {
+					fields.add(new BytesRef(jsonString.getString()));
+				}
+			}
+			return new FieldDoc(doc, score, fields.toArray(), shardIndex);
+		}
+		return null;
 	}
 
 	@POST
