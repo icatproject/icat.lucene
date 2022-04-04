@@ -6,8 +6,10 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Timer;
@@ -47,8 +49,11 @@ import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
+import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.MultiReader;
+import org.apache.lucene.index.ReaderManager;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.flexible.standard.StandardQueryParser;
 import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfigHandler;
@@ -60,7 +65,6 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TermRangeQuery;
 import org.apache.lucene.search.TopDocs;
@@ -88,15 +92,185 @@ public class Lucene {
 		TextField, StringField, SortedDocValuesField, DoublePoint
 	}
 
-	private class IndexBucket {
+	private class ShardBucket {
 		private FSDirectory directory;
 		private IndexWriter indexWriter;
-		private SearcherManager searcherManager;
+		private ReaderManager readerManager;
+
+		/**
+		 * Creates a bucket for accessing the read and write functionality for a single
+		 * "shard" Lucene index which can then be grouped to represent a single document
+		 * type.
+		 * 
+		 * @param shardPath Path to the directory used as storage for this shard.
+		 * @throws IOException
+		 */
+		public ShardBucket(java.nio.file.Path shardPath) throws IOException {
+			directory = FSDirectory.open(shardPath);
+			IndexWriterConfig config = new IndexWriterConfig(analyzer);
+			indexWriter = new IndexWriter(directory, config);
+			String[] files = directory.listAll();
+			if (files.length == 1 && files[0].equals("write.lock")) {
+				logger.debug("Directory only has the write.lock file so store and delete a dummy document");
+				Document doc = new Document();
+				doc.add(new StringField("dummy", "dummy", Store.NO));
+				indexWriter.addDocument(doc);
+				indexWriter.commit();
+				indexWriter.deleteDocuments(new Term("dummy", "dummy"));
+				indexWriter.commit();
+				logger.debug("Now have " + indexWriter.getDocStats().numDocs + " documents indexed");
+			}
+			readerManager = new ReaderManager(indexWriter);
+		}
+	}
+
+	private class IndexBucket {
+		private String entityName;
+		private Map<Long, ShardBucket> shardMap = new HashMap<>();
 		private AtomicBoolean locked = new AtomicBoolean();
+
+		/**
+		 * Creates a bucket for accessing the high level functionality, such as
+		 * searching, for a single document type. Incoming documents will be routed to
+		 * one of the individual "shard" indices that are grouped by this Object.
+		 * 
+		 * @param entityName The name of the entity that this index contains documents
+		 *                   for.
+		 */
+		public IndexBucket(String entityName) {
+			try {
+				this.entityName = entityName;
+				Long shardIndex = 0L;
+				java.nio.file.Path shardPath = luceneDirectory.resolve(entityName);
+				do {
+					ShardBucket shardBucket = new ShardBucket(shardPath);
+					shardMap.put(shardIndex, shardBucket);
+					shardIndex++;
+					shardPath = luceneDirectory.resolve(entityName + "_" + shardIndex);
+				} while (Files.isDirectory(shardPath));
+				logger.debug("Bucket for {} is now ready with {} shards", entityName, shardIndex);
+			} catch (Throwable e) {
+				logger.error("Can't continue " + e.getClass() + " " + e.getMessage());
+			}
+		}
+
+		/**
+		 * Acquires DirectoryReaders from the ReaderManagers of the individual shards in
+		 * this bucket.
+		 * 
+		 * @return Array of DirectoryReaders for all shards in this bucket.
+		 * @throws IOException
+		 */
+		public DirectoryReader[] acquireReaders() throws IOException {
+			List<DirectoryReader> subReaders = new ArrayList<>();
+			for (ShardBucket shardBucket : shardMap.values()) {
+				subReaders.add(shardBucket.readerManager.acquire());
+			}
+			return subReaders.toArray(new DirectoryReader[0]);
+		}
+
+		/**
+		 * Creates a new ShardBucket and stores it in the shardMap.
+		 * 
+		 * @param shardKey The identifier for the new shard to be created. For
+		 *                 simplicity, should a Long starting at 0 and incrementing by 1
+		 *                 for each new shard.
+		 * @return A new ShardBucket with the provided shardKey.
+		 * @throws IOException
+		 */
+		public ShardBucket buildShardBucket(Long shardKey) throws IOException {
+			ShardBucket shardBucket = new ShardBucket(luceneDirectory.resolve(entityName + "_" + shardKey));
+			shardMap.put(shardKey, shardBucket);
+			return shardBucket;
+		}
+
+		/**
+		 * Commits Documents for writing on all "shard" indices for this bucket.
+		 * 
+		 * @param command    The high level command which called this function. Only
+		 *                   used for debug logging.
+		 * @param entityName The name of the entities being committed. Only used for
+		 *                   debug logging.
+		 * @throws IOException
+		 */
+		public void commit(String command, String entityName) throws IOException {
+			for (Entry<Long, ShardBucket> entry : shardMap.entrySet()) {
+				ShardBucket shardBucket = entry.getValue();
+				int cached = shardBucket.indexWriter.numRamDocs();
+				shardBucket.indexWriter.commit();
+				if (cached != 0) {
+					logger.debug("{} has committed {} {} changes to Lucene - now have {} documents indexed in shard {}",
+							command, cached, entityName, shardBucket.indexWriter.getDocStats().numDocs, entry.getKey());
+				}
+				shardBucket.readerManager.maybeRefreshBlocking();
+			}
+		}
+
+		/**
+		 * Commits and closes all "shard" indices for this bucket.
+		 * 
+		 * @throws IOException
+		 */
+		public void close() throws IOException {
+			for (ShardBucket shardBucket : shardMap.values()) {
+				shardBucket.readerManager.close();
+				shardBucket.indexWriter.commit();
+				shardBucket.indexWriter.close();
+				shardBucket.directory.close();
+			}
+		}
+
+		/**
+		 * Provides the ShardBucket that should be used for reading/writing the Document
+		 * with the provided id. All ids up to luceneMaxShardSize are indexed in the
+		 * first shard, after that a new shard is created for the next
+		 * luceneMaxShardSize Documents and so on.
+		 * 
+		 * @param id The id of a Document to be routed.
+		 * @return The ShardBucket that the relevant Document is/should be indexed in.
+		 * @throws IOException
+		 */
+		public ShardBucket routeShard(Long id) throws IOException {
+			if (id == null) {
+				// If we don't have id, provide the first bucket
+				return shardMap.get(0L);
+			}
+			Long shard = id / luceneMaxShardSize;
+			ShardBucket shardBucket = shardMap.get(shard);
+			if (shardBucket == null) {
+				shardBucket = buildShardBucket(shard);
+			}
+			return shardBucket;
+		}
+
+		/**
+		 * Provides the IndexWriter that should be used for writing the Document with
+		 * the provided id.
+		 * 
+		 * @param id The id of a Document to be routed.
+		 * @return The relevant IndexWriter.
+		 * @throws IOException
+		 */
+		public IndexWriter getWriter(Long id) throws IOException {
+			return routeShard(id).indexWriter;
+		}
+
+		public void releaseReaders(DirectoryReader[] subReaders) throws IOException, LuceneException {
+			if (subReaders.length != shardMap.size()) {
+				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR,
+						"Was expecting the same number of DirectoryReaders as ShardBuckets, but had "
+								+ subReaders.length + ", " + shardMap.size() + " respectively.");
+			}
+			int i = 0;
+			for (ShardBucket shardBucket : shardMap.values()) {
+				shardBucket.readerManager.release(subReaders[i]);
+				i++;
+			}
+		}
 	}
 
 	public class Search {
-		public Map<String, IndexSearcher> map;
+		public Map<String, DirectoryReader[]> map;
 		public Query query;
 		public ScoreDoc lastDoc;
 	}
@@ -112,6 +286,7 @@ public class Lucene {
 	private java.nio.file.Path luceneDirectory;
 
 	private int luceneCommitMillis;
+	private Long luceneMaxShardSize;
 
 	private AtomicLong bucketNum = new AtomicLong();
 	private Map<String, IndexBucket> indexBuckets = new ConcurrentHashMap<>();
@@ -170,12 +345,13 @@ public class Lucene {
 				ev = parser.next();
 				if (ev == Event.VALUE_NULL) {
 					try {
-						IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> createBucket(k));
+						IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> new IndexBucket(k));
 						if (bucket.locked.get()) {
 							throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
 									"Lucene locked for " + entityName);
 						}
-						bucket.indexWriter.deleteDocuments(new Term("id", Long.toString(id)));
+						ShardBucket shardBucket = bucket.routeShard(id);
+						shardBucket.indexWriter.deleteDocuments(new Term("id", Long.toString(id)));
 					} catch (IOException e) {
 						throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 					}
@@ -199,7 +375,7 @@ public class Lucene {
 	private void add(HttpServletRequest request, String entityName, When when, JsonParser parser, Long id)
 			throws LuceneException, IOException {
 
-		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> createBucket(k));
+		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> new IndexBucket(k));
 
 		AttributeName attName = null;
 		FieldType fType = null;
@@ -274,13 +450,20 @@ public class Lucene {
 						throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
 								"Lucene locked for " + entityName);
 					}
-					bucket.indexWriter.addDocument(doc);
+					String documentId = doc.get("id");
+					if (documentId == null) {
+						logger.warn(
+								"Adding Document without an id field is not recommended, routing, updates and deletions will not be available for this Document.");
+						bucket.getWriter(null).addDocument(doc);
+					} else {
+						bucket.getWriter(Long.valueOf(documentId)).addDocument(doc);
+					}
 				} else {
 					if (bucket.locked.get()) {
 						throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
 								"Lucene locked for " + entityName);
 					}
-					bucket.indexWriter.updateDocument(new Term("id", id.toString()), doc);
+					bucket.getWriter(id).updateDocument(new Term("id", id.toString()), doc);
 				}
 				return;
 			} else {
@@ -352,45 +535,11 @@ public class Lucene {
 			for (Entry<String, IndexBucket> entry : indexBuckets.entrySet()) {
 				IndexBucket bucket = entry.getValue();
 				if (!bucket.locked.get()) {
-					int cached = bucket.indexWriter.numRamDocs();
-					bucket.indexWriter.commit();
-					if (cached != 0) {
-						logger.debug("Synch has committed {} {} changes to Lucene - now have {} documents indexed",
-								cached, entry.getKey(), bucket.indexWriter.getDocStats().numDocs);
-					}
-					bucket.searcherManager.maybeRefreshBlocking();
+					bucket.commit("Synch", entry.getKey());
 				}
 			}
 		} catch (IOException e) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-		}
-	}
-
-	private IndexBucket createBucket(String name) {
-		try {
-			IndexBucket bucket = new IndexBucket();
-			FSDirectory directory = FSDirectory.open(luceneDirectory.resolve(name));
-			bucket.directory = directory;
-			IndexWriterConfig config = new IndexWriterConfig(analyzer);
-			IndexWriter iwriter = new IndexWriter(directory, config);
-			String[] files = directory.listAll();
-			if (files.length == 1 && files[0].equals("write.lock")) {
-				logger.debug("Directory only has the write.lock file so store and delete a dummy document");
-				Document doc = new Document();
-				doc.add(new StringField("dummy", "dummy", Store.NO));
-				iwriter.addDocument(doc);
-				iwriter.commit();
-				iwriter.deleteDocuments(new Term("dummy", "dummy"));
-				iwriter.commit();
-				logger.debug("Now have " + iwriter.getDocStats().numDocs + " documents indexed");
-			}
-			bucket.indexWriter = iwriter;
-			bucket.searcherManager = new SearcherManager(iwriter, false, false, null);
-			logger.debug("Bucket for {} is now ready", name);
-			return bucket;
-		} catch (Throwable e) {
-			logger.error("Can't continue " + e.getClass() + " " + e.getMessage());
-			return null;
 		}
 	}
 
@@ -406,7 +555,7 @@ public class Lucene {
 			uid = bucketNum.getAndIncrement();
 			Search search = new Search();
 			searches.put(uid, search);
-			Map<String, IndexSearcher> map = new HashMap<>();
+			Map<String, DirectoryReader[]> map = new HashMap<>();
 			search.map = map;
 
 			try (JsonReader r = Json.createReader(request.getInputStream())) {
@@ -441,10 +590,10 @@ public class Lucene {
 							Occur.MUST);
 				}
 
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
+				if (o.containsKey("parameters")) {
+					JsonArray parameters = o.getJsonArray("parameters");
 					IndexSearcher datafileParameterSearcher = getSearcher(map, "DatafileParameter");
-					for (JsonValue p : params) {
+					for (JsonValue p : parameters) {
 						BooleanQuery.Builder paramQuery = parseParameter(p);
 						Query toQuery = JoinUtil.createJoinQuery("datafile", false, "id", paramQuery.build(),
 								datafileParameterSearcher, ScoreMode.None);
@@ -492,7 +641,7 @@ public class Lucene {
 			uid = bucketNum.getAndIncrement();
 			Search search = new Search();
 			searches.put(uid, search);
-			Map<String, IndexSearcher> map = new HashMap<>();
+			Map<String, DirectoryReader[]> map = new HashMap<>();
 			search.map = map;
 			try (JsonReader r = Json.createReader(request.getInputStream())) {
 				JsonObject o = r.readObject();
@@ -526,10 +675,10 @@ public class Lucene {
 							Occur.MUST);
 				}
 
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
+				if (o.containsKey("parameters")) {
+					JsonArray parameters = o.getJsonArray("parameters");
 					IndexSearcher datasetParameterSearcher = getSearcher(map, "DatasetParameter");
-					for (JsonValue p : params) {
+					for (JsonValue p : parameters) {
 						BooleanQuery.Builder paramQuery = parseParameter(p);
 						Query toQuery = JoinUtil.createJoinQuery("dataset", false, "id", paramQuery.build(),
 								datasetParameterSearcher, ScoreMode.None);
@@ -574,12 +723,8 @@ public class Lucene {
 			timer = null; // This seems to be necessary to make it really stop
 		}
 		try {
-			for (Entry<String, IndexBucket> entry : indexBuckets.entrySet()) {
-				IndexBucket bucket = entry.getValue();
-				bucket.searcherManager.close();
-				bucket.indexWriter.commit();
-				bucket.indexWriter.close();
-				bucket.directory.close();
+			for (IndexBucket bucket : indexBuckets.values()) {
+				bucket.close();
 			}
 			logger.info("Closed down icat.lucene");
 		} catch (Exception e) {
@@ -592,13 +737,12 @@ public class Lucene {
 	public void freeSearcher(@PathParam("uid") Long uid) throws LuceneException {
 		if (uid != null) { // May not be set for internal calls
 			logger.debug("Requesting freeSearcher {}", uid);
-			Map<String, IndexSearcher> search = searches.get(uid).map;
-			for (Entry<String, IndexSearcher> entry : search.entrySet()) {
+			Map<String, DirectoryReader[]> search = searches.get(uid).map;
+			for (Entry<String, DirectoryReader[]> entry : search.entrySet()) {
 				String name = entry.getKey();
-				IndexSearcher isearcher = entry.getValue();
-				SearcherManager manager = indexBuckets.computeIfAbsent(name, k -> createBucket(k)).searcherManager;
+				DirectoryReader[] subReaders = entry.getValue();
 				try {
-					manager.release(isearcher);
+					indexBuckets.computeIfAbsent(name, k -> new IndexBucket(k)).releaseReaders(subReaders);
 				} catch (IOException e) {
 					throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 				}
@@ -610,14 +754,14 @@ public class Lucene {
 	/*
 	 * Need a new set of IndexSearchers for each search as identified by a uid
 	 */
-	private IndexSearcher getSearcher(Map<String, IndexSearcher> bucket, String name) throws IOException {
-		IndexSearcher isearcher = bucket.get(name);
-		if (isearcher == null) {
-			isearcher = indexBuckets.computeIfAbsent(name, k -> createBucket(k)).searcherManager.acquire();
-			bucket.put(name, isearcher);
+	private IndexSearcher getSearcher(Map<String, DirectoryReader[]> bucket, String name) throws IOException {
+		DirectoryReader[] subReaders = bucket.get(name);
+		if (subReaders == null) {
+			subReaders = indexBuckets.computeIfAbsent(name, k -> new IndexBucket(k)).acquireReaders();
+			bucket.put(name, subReaders);
 			logger.debug("Remember searcher for {}", name);
 		}
-		return isearcher;
+		return new IndexSearcher(new MultiReader(subReaders, false));
 	}
 
 	@PostConstruct
@@ -633,6 +777,7 @@ public class Lucene {
 			}
 
 			luceneCommitMillis = props.getPositiveInt("commitSeconds") * 1000;
+			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), new Long(Integer.MAX_VALUE + 1));
 
 			analyzer = new IcatAnalyzer();
 
@@ -674,7 +819,7 @@ public class Lucene {
 			uid = bucketNum.getAndIncrement();
 			Search search = new Search();
 			searches.put(uid, search);
-			Map<String, IndexSearcher> map = new HashMap<>();
+			Map<String, DirectoryReader[]> map = new HashMap<>();
 			search.map = map;
 			try (JsonReader r = Json.createReader(request.getInputStream())) {
 				JsonObject o = r.readObject();
@@ -703,11 +848,11 @@ public class Lucene {
 							Occur.MUST);
 				}
 
-				if (o.containsKey("params")) {
-					JsonArray params = o.getJsonArray("params");
+				if (o.containsKey("parameters")) {
+					JsonArray parameters = o.getJsonArray("parameters");
 					IndexSearcher investigationParameterSearcher = getSearcher(map, "InvestigationParameter");
 
-					for (JsonValue p : params) {
+					for (JsonValue p : parameters) {
 						BooleanQuery.Builder paramQuery = parseParameter(p);
 						Query toQuery = JoinUtil.createJoinQuery("investigation", false, "id", paramQuery.build(),
 								investigationParameterSearcher, ScoreMode.None);
@@ -773,13 +918,15 @@ public class Lucene {
 	@Path("lock/{entityName}")
 	public void lock(@PathParam("entityName") String entityName) throws LuceneException {
 		logger.info("Requesting lock of {} index", entityName);
-		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> createBucket(k));
+		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> new IndexBucket(k));
 
 		if (!bucket.locked.compareAndSet(false, true)) {
 			throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE, "Lucene already locked for " + entityName);
 		}
 		try {
-			bucket.indexWriter.deleteAll();
+			for (ShardBucket shardBucket : bucket.shardMap.values()) {
+				shardBucket.indexWriter.deleteAll();
+			}
 		} catch (IOException e) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
@@ -792,7 +939,13 @@ public class Lucene {
 		TopDocs topDocs = search.lastDoc == null ? isearcher.search(search.query, maxResults)
 				: isearcher.searchAfter(search.lastDoc, search.query, maxResults);
 		ScoreDoc[] hits = topDocs.scoreDocs;
-		logger.debug("Hits " + topDocs.totalHits + " maxscore " + topDocs.scoreDocs[0].score);
+		Float maxScore;
+		if (hits.length == 0) {
+			maxScore = Float.NaN;
+		} else {
+			maxScore = hits[0].score;
+		}
+		logger.debug("Hits " + topDocs.totalHits + " maxscore " + maxScore);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject();
@@ -841,9 +994,11 @@ public class Lucene {
 		String pLowerDateValue = parameter.getString("lowerDateValue", null);
 		String pUpperDateValue = parameter.getString("upperDateValue", null);
 		Double pLowerNumericValue = parameter.containsKey("lowerNumericValue")
-				? parameter.getJsonNumber("lowerNumericValue").doubleValue() : null;
+				? parameter.getJsonNumber("lowerNumericValue").doubleValue()
+				: null;
 		Double pUpperNumericValue = parameter.containsKey("upperNumericValue")
-				? parameter.getJsonNumber("upperNumericValue").doubleValue() : null;
+				? parameter.getJsonNumber("upperNumericValue").doubleValue()
+				: null;
 		if (pStringValue != null) {
 			paramQuery.add(new WildcardQuery(new Term("stringValue", pStringValue)), Occur.MUST);
 		} else if (pLowerDateValue != null && pUpperDateValue != null) {
@@ -861,19 +1016,13 @@ public class Lucene {
 	@Path("unlock/{entityName}")
 	public void unlock(@PathParam("entityName") String entityName) throws LuceneException {
 		logger.debug("Requesting unlock of {} index", entityName);
-		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> createBucket(k));
+		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> new IndexBucket(k));
 		if (!bucket.locked.compareAndSet(true, false)) {
 			throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
 					"Lucene is not currently locked for " + entityName);
 		}
 		try {
-			int cached = bucket.indexWriter.numRamDocs();
-			bucket.indexWriter.commit();
-			if (cached != 0) {
-				logger.debug("Unlock has committed {} {} changes to Lucene - now have {} documents indexed", cached,
-						entityName, bucket.indexWriter.getDocStats().numDocs);
-			}
-			bucket.searcherManager.maybeRefreshBlocking();
+			bucket.commit("Unlock", entityName);
 		} catch (IOException e) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
