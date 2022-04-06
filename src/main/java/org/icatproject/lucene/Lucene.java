@@ -71,7 +71,6 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TermQuery;
@@ -457,7 +456,7 @@ public class Lucene {
 				} else if (fType == FieldType.SortedDocValuesField) {
 					// Any field we sort on must be stored to enable searching after
 					doc.add(new SortedDocValuesField(name, new BytesRef(value)));
-					doc.add(new StoredField(name, value));
+					doc.add(new StoredField(name, value)); // TODO potentially remove this, or the version in LuceneApi
 				} else if (fType == FieldType.DoublePoint) {
 					doc.add(new DoublePoint(name, dvalue));
 					if (store == Store.YES) {
@@ -710,6 +709,41 @@ public class Lucene {
 
 	}
 
+	/**
+	 * Encodes core Lucene information (keys preceded by underscores) and a
+	 * selection of the Document's source fields to JSON to be returned to
+	 * icat.server. Note that "_id" is the Lucene Document id, and should not be
+	 * confused with the ICAT entity id, which should be denoted by the key "id"
+	 * within the "_source" object.
+	 * 
+	 * @param gen      JsonGenerator to encode the information to.
+	 * @param hit      ScoreDoc representing a single search result.
+	 * @param searcher IndexSearcher used to get the Document for the hit.
+	 * @param search   Search object containing the fields to return.
+	 * @throws IOException
+	 */
+	private void encodeResult(JsonGenerator gen, ScoreDoc hit, IndexSearcher searcher, Search search)
+			throws IOException {
+		int luceneDocId = hit.doc;
+		Document document = searcher.doc(luceneDocId);
+		gen.writeStartObject().write("_id", luceneDocId);
+		Float score = hit.score;
+		if (!score.equals(Float.NaN)) {
+			gen.write("_score", hit.score);
+		}
+		gen.writeStartObject("_source");
+		document.forEach((field) -> {
+			if (search.fields.contains(field.name())) {
+				if (field.stringValue() != null) {
+					gen.write(field.name(), field.stringValue());
+				} else if (field.numericValue() != null) {
+					gen.write(field.name(), field.numericValue().doubleValue());
+				}
+			}
+		});
+		gen.writeEnd().writeEnd(); // source object, result object
+	}
+
 	@PreDestroy
 	private void exit() {
 		logger.info("Closing down icat.lucene");
@@ -950,27 +984,9 @@ public class Lucene {
 		logger.debug("Hits " + totalHits + " maxscore " + maxScore);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
-			gen.writeStartObject();
-			gen.writeStartArray("results");
+			gen.writeStartObject().writeStartArray("results");
 			for (ScoreDoc hit : hits) {
-				Document doc = isearcher.doc(hit.doc);
-				gen.writeStartObject().write("id", Long.parseLong(doc.get("id")));
-				Float score = hit.score;
-				if (!score.equals(Float.NaN)) {
-					gen.write("score", hit.score);
-				}
-				gen.writeStartObject("source");
-				doc.forEach((field) -> {
-					if (search.fields.contains(field.name())) {
-						if (field.stringValue() != null) {
-							gen.write(field.name(), field.stringValue());
-						} else if (field.numericValue() != null) {
-							gen.write(field.name(), field.numericValue().doubleValue());
-						}
-					}
-				});
-				gen.writeEnd();
-				gen.writeEnd(); // result object
+				encodeResult(gen, hit, isearcher, search);
 			}
 			gen.writeEnd(); // array results
 			if (hits.length == maxResults) {
