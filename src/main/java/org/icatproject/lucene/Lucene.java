@@ -37,6 +37,10 @@ import javax.json.JsonString;
 import javax.json.JsonValue;
 import javax.json.JsonValue.ValueType;
 import javax.json.stream.JsonGenerator;
+import javax.measure.IncommensurableException;
+import javax.measure.Unit;
+import javax.measure.UnitConverter;
+import javax.measure.format.MeasurementParseException;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
@@ -109,6 +113,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.Marker;
 import org.slf4j.MarkerFactory;
+
+import tech.units.indriya.format.SimpleUnitFormat;
+import tech.units.indriya.unit.Units;
 
 @Path("/")
 @Singleton
@@ -313,6 +320,7 @@ public class Lucene {
 	private static final Logger logger = LoggerFactory.getLogger(Lucene.class);
 	private static final Marker fatal = MarkerFactory.getMarker("FATAL");
 	private static final SimpleDateFormat df = new SimpleDateFormat("yyyyMMddHHmm");
+	private static final SimpleUnitFormat unitFormat = SimpleUnitFormat.getInstance();
 
 	private static final Set<String> doubleFields = new HashSet<>();
 	private static final Set<String> facetFields = new HashSet<>();
@@ -333,11 +341,13 @@ public class Lucene {
 		TimeZone tz = TimeZone.getTimeZone("GMT");
 		df.setTimeZone(tz);
 
-		doubleFields.add("numericValue");
+		unitFormat.alias(Units.CELSIUS, "celsius"); // TODO this should be generalised with the units we need
+
+		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI"));
 		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name"));
 		longFields.addAll(Arrays.asList("date", "startDate", "endDate", "dateTimeValue"));
 		sortFields.addAll(Arrays.asList("datafile.id", "dataset.id", "investigation.id", "id", "date", "startDate",
-				"endDate", "name"));
+				"endDate", "name", "stringValue", "dateTimeValue", "numericValue", "numericValueSI"));
 		textFields.addAll(Arrays.asList("name", "visitId", "description", "datafileFormat.name", "sample.name",
 				"sample.type.name", "title", "summary", "facility.name", "user.fullName"));
 
@@ -1364,6 +1374,36 @@ public class Lucene {
 			document.add(new TextField(key, json.getString(key), Store.YES));
 		} else {
 			document.add(new StringField(key, json.getString(key), Store.YES));
+		}
+
+		// Whenever the units are set or changed, convert to SI
+		if (key.equals("type.units")) {
+			String unitString = json.getString("type.units");
+			IndexableField field = document.getField("numericValue");
+			double value;
+			if (field != null) {
+				value = NumericUtils.sortableLongToDouble(field.numericValue().longValue());
+			} else if (json.containsKey("numericValue")) {
+				value = json.getJsonNumber(key).doubleValue();
+			} else {
+				// Strings and date/time values also have units, so if we aren't dealing with a
+				// number don't convert
+				return;
+			}
+			try {
+				logger.trace("Attempting to convert {} {}", value, unitString);
+				Unit<?> unit = unitFormat.parse(unitString);
+				Unit<?> systemUnit = unit.getSystemUnit();
+				UnitConverter converter = unit.getConverterToAny(systemUnit);
+				Double systemValue = converter.convert(value);
+				document.add(new DoublePoint("numericValueSI", systemValue));
+				document.add(new StoredField("numericValueSI", systemValue));
+				long sortableLong = NumericUtils.doubleToSortableLong(systemValue);
+				document.add(new NumericDocValuesField("numericValueSI", sortableLong));
+				document.add(new StringField("type.unitsSI", systemUnit.getName(), Store.YES));
+			} catch (IncommensurableException | MeasurementParseException e) {
+				logger.error("Unable to convert 'type.units' of {} due to {}", unitString, e.getMessage());
+			}
 		}
 	}
 
