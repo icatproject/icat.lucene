@@ -32,18 +32,14 @@ import javax.json.Json;
 import javax.json.JsonArray;
 import javax.json.JsonNumber;
 import javax.json.JsonObject;
+import javax.json.JsonObjectBuilder;
 import javax.json.JsonReader;
 import javax.json.JsonString;
 import javax.json.JsonValue;
 import javax.json.JsonValue.ValueType;
 import javax.json.stream.JsonGenerator;
-import javax.measure.IncommensurableException;
-import javax.measure.Unit;
-import javax.measure.UnitConverter;
-import javax.measure.format.MeasurementParseException;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
-import javax.ws.rs.DELETE;
 import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
@@ -109,13 +105,12 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.NumericUtils;
 import org.icatproject.lucene.exceptions.LuceneException;
 import org.icatproject.utils.CheckedProperties;
+import org.icatproject.utils.IcatUnits;
+import org.icatproject.utils.IcatUnits.SystemValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.Marker;
 import org.slf4j.MarkerFactory;
-
-import tech.units.indriya.format.SimpleUnitFormat;
-import tech.units.indriya.unit.Units;
 
 @Path("/")
 @Singleton
@@ -302,6 +297,7 @@ public class Lucene {
 		public Map<String, DirectoryReader[]> readerMap;
 		public Query query;
 		public Sort sort;
+		public boolean scored;
 		public Set<String> fields = new HashSet<String>();
 		public Set<FacetDimensionRequest> dimensions = new HashSet<FacetDimensionRequest>();
 	}
@@ -320,7 +316,6 @@ public class Lucene {
 	private static final Logger logger = LoggerFactory.getLogger(Lucene.class);
 	private static final Marker fatal = MarkerFactory.getMarker("FATAL");
 	private static final SimpleDateFormat df = new SimpleDateFormat("yyyyMMddHHmm");
-	private static final SimpleUnitFormat unitFormat = SimpleUnitFormat.getInstance();
 
 	private static final Set<String> doubleFields = new HashSet<>();
 	private static final Set<String> facetFields = new HashSet<>();
@@ -340,8 +335,6 @@ public class Lucene {
 	static {
 		TimeZone tz = TimeZone.getTimeZone("GMT");
 		df.setTimeZone(tz);
-
-		unitFormat.alias(Units.CELSIUS, "celsius"); // TODO this should be generalised with the units we need
 
 		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI"));
 		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name"));
@@ -388,7 +381,7 @@ public class Lucene {
 		investigationParser.setAnalyzer(analyzer);
 		investigationParser.setMultiFields(investigationFields);
 
-		CharSequence[] sampleFields = { "sample.name", "sample.type.name" };
+		CharSequence[] sampleFields = { "name", "type.name" };
 		sampleParser.setAllowLeadingWildcard(true);
 		sampleParser.setAnalyzer(analyzer);
 		sampleParser.setMultiFields(sampleFields);
@@ -407,6 +400,7 @@ public class Lucene {
 	private Timer timer;
 
 	private Map<Long, Search> searches = new ConcurrentHashMap<>();
+	private IcatUnits icatUnits;
 
 	/**
 	 * return the version of the lucene server
@@ -590,7 +584,7 @@ public class Lucene {
 	@POST
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
-	@Path("datafiles")
+	@Path("datafile")
 	public String datafiles(@Context HttpServletRequest request, @QueryParam("search_after") String searchAfter,
 			@QueryParam("maxResults") int maxResults, @QueryParam("sort") String sort) throws LuceneException {
 		Long uid = null;
@@ -611,6 +605,7 @@ public class Lucene {
 		searches.put(uid, search);
 		Map<String, DirectoryReader[]> readerMap = new HashMap<>();
 		search.readerMap = readerMap;
+		search.scored = (sort == null || sort.equals(""));
 		search.sort = parseSort(sort);
 
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
@@ -656,7 +651,7 @@ public class Lucene {
 	@POST
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
-	@Path("datasets")
+	@Path("dataset")
 	public String datasets(@Context HttpServletRequest request, @QueryParam("search_after") String searchAfter,
 			@QueryParam("maxResults") int maxResults, @QueryParam("sort") String sort) throws LuceneException {
 
@@ -679,6 +674,7 @@ public class Lucene {
 		searches.put(uid, search);
 		Map<String, DirectoryReader[]> readerMap = new HashMap<>();
 		search.readerMap = readerMap;
+		search.scored = (sort == null || sort.equals(""));
 		search.sort = parseSort(sort);
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
@@ -836,11 +832,8 @@ public class Lucene {
 		}
 	}
 
-	@DELETE
-	@Path("freeSearcher/{uid}")
-	public void freeSearcher(@PathParam("uid") Long uid) throws LuceneException {
+	public void freeSearcher(Long uid) throws LuceneException {
 		if (uid != null) { // May not be set for internal calls
-			logger.debug("Requesting freeSearcher {}", uid);
 			Map<String, DirectoryReader[]> search = searches.get(uid).readerMap;
 			for (Entry<String, DirectoryReader[]> entry : search.entrySet()) {
 				String name = entry.getKey();
@@ -875,6 +868,7 @@ public class Lucene {
 		searches.put(uid, search);
 		Map<String, DirectoryReader[]> readerMap = new HashMap<>();
 		search.readerMap = readerMap;
+		search.scored = (sort == null || sort.equals(""));
 		search.sort = parseSort(sort);
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
@@ -937,28 +931,34 @@ public class Lucene {
 									.getValuesAs(JsonObject.class)) {
 								Long lower = Long.MIN_VALUE;
 								Long upper = Long.MAX_VALUE;
-								if (range.containsKey("lower")) {
-									lower = range.getJsonNumber("lower").longValueExact();
+								if (range.containsKey("from")) {
+									lower = range.getJsonNumber("from").longValueExact();
 								}
-								if (range.containsKey("upper")) {
-									upper = range.getJsonNumber("upper").longValueExact();
+								if (range.containsKey("to")) {
+									upper = range.getJsonNumber("to").longValueExact();
 								}
-								String label = lower.toString() + "_" + upper.toString();
-								ranges.add(new LongRange(label, lower, true, upper, true));
+								String label = lower.toString() + "-" + upper.toString();
+								if (range.containsKey("key")) {
+									label = range.getString("key");
+								}
+								ranges.add(new LongRange(label, lower, true, upper, false));
 							}
 						} else if (doubleFields.contains(dimension)) {
 							for (JsonObject range : dimensionObject.getJsonArray("ranges")
 									.getValuesAs(JsonObject.class)) {
 								Double lower = Double.MIN_VALUE;
 								Double upper = Double.MAX_VALUE;
-								if (range.containsKey("lower")) {
-									lower = range.getJsonNumber("lower").doubleValue();
+								String label = lower.toString() + "-" + upper.toString();
+								if (range.containsKey("from")) {
+									lower = range.getJsonNumber("from").doubleValue();
 								}
-								if (range.containsKey("upper")) {
-									upper = range.getJsonNumber("upper").doubleValue();
+								if (range.containsKey("to")) {
+									upper = range.getJsonNumber("to").doubleValue();
 								}
-								String label = lower.toString() + "_" + upper.toString();
-								ranges.add(new DoubleRange(label, lower, true, upper, true));
+								if (range.containsKey("key")) {
+									label = range.getString("key");
+								}
+								ranges.add(new DoubleRange(label, lower, true, upper, false));
 							}
 						} else {
 							throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
@@ -1006,6 +1006,8 @@ public class Lucene {
 			timer = new Timer("LuceneCommitTimer");
 			timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
 
+			icatUnits = new IcatUnits(props.getString("units", ""));
+
 		} catch (Exception e) {
 			logger.error(fatal, e.getMessage());
 			throw new IllegalStateException(e.getMessage());
@@ -1028,7 +1030,7 @@ public class Lucene {
 	@POST
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
-	@Path("investigations")
+	@Path("investigation")
 	public String investigations(@Context HttpServletRequest request, @QueryParam("search_after") String searchAfter,
 			@QueryParam("maxResults") int maxResults, @QueryParam("sort") String sort) throws LuceneException {
 		Long uid = null;
@@ -1049,6 +1051,7 @@ public class Lucene {
 		searches.put(uid, search);
 		Map<String, DirectoryReader[]> readerMap = new HashMap<>();
 		search.readerMap = readerMap;
+		search.scored = (sort == null || sort.equals(""));
 		search.sort = parseSort(sort);
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
@@ -1184,60 +1187,43 @@ public class Lucene {
 			}
 			logger.debug("Facets found for " + results.size() + " dimensions");
 		}
-		ByteArrayOutputStream baos = new ByteArrayOutputStream();
-		try (JsonGenerator gen = Json.createGenerator(baos)) {
-			gen.writeStartObject().writeStartObject("dimensions"); // object containing all facet dimensions
-			Set<String> dimensionSet = new HashSet<>();
-			search.dimensions.forEach(d -> dimensionSet.add(d.getDimension()));
-			writeFacetResults(dimensionSet, results, gen);
-			writeFacetResults(new HashSet<>(), rangeResults, gen);
-			gen.writeEnd().writeEnd(); // object containing dimensions
-		}
-		logger.debug("Json returned {}", baos.toString());
-		return baos.toString();
-	}
-
-	private void writeFacetResults(Set<String> dimensionSet, List<FacetResult> results, JsonGenerator gen) {
+		Set<String> dimensionSet = new HashSet<>();
+		search.dimensions.forEach(d -> dimensionSet.add(d.getDimension()));
+		JsonObjectBuilder aggregationsBuilder = Json.createObjectBuilder();
 		for (FacetResult result : results) {
 			if (dimensionSet.size() == 0 || dimensionSet.contains(result.dim)) {
-				gen.writeStartObject(result.dim); // object containing labelValues for a given dimension
-				for (LabelAndValue labelValue : result.labelValues) {
-					gen.write(labelValue.label, labelValue.value.longValue());
-				}
-				gen.writeEnd(); // object containing labelValues
+				buildBuckets(aggregationsBuilder, result);
 			}
 		}
+		for (FacetResult result : rangeResults) {
+			buildBuckets(aggregationsBuilder, result);
+		}
+		return Json.createObjectBuilder().add("aggregations", aggregationsBuilder).build().toString();
+	}
+
+	private void buildBuckets(JsonObjectBuilder aggregationsBuilder, FacetResult result) {
+		JsonObjectBuilder bucketsBuilder = Json.createObjectBuilder();
+		for (LabelAndValue labelValue : result.labelValues) {
+			JsonObjectBuilder bucketBuilder = Json.createObjectBuilder();
+			bucketsBuilder.add(labelValue.label, bucketBuilder.add("doc_count", labelValue.value.longValue()));
+		}
+		aggregationsBuilder.add(result.dim, Json.createObjectBuilder().add("buckets", bucketsBuilder));
 	}
 
 	private String luceneSearchResult(String name, Search search, String searchAfter, int maxResults, Long uid)
 			throws IOException, LuceneException {
 		IndexSearcher isearcher = getSearcher(search.readerMap, name);
-		logger.debug("To search in {} for {} {} with {} from {} ", name, search.query, maxResults, isearcher,
-				searchAfter);
+		String format = "Search {} with: query {}, maxResults, searchAfter {}, scored {} ";
+		logger.debug(format, name, search.query, maxResults, searchAfter, search.scored);
 		FieldDoc searchAfterDoc = parseSearchAfter(searchAfter);
-		ScoreDoc[] hits;
-		TotalHits totalHits;
-		SortField[] fields = null;
-		if (search.sort == null) {
-			// Use default score sorting
-			TopDocs topDocs;
-			topDocs = searchAfterDoc == null ? isearcher.search(search.query, maxResults)
-					: isearcher.searchAfter(searchAfterDoc, search.query, maxResults);
-			hits = topDocs.scoreDocs;
-			totalHits = topDocs.totalHits;
-		} else {
-			// Use specified sorting
-			TopFieldDocs topFieldDocs;
-			topFieldDocs = searchAfterDoc == null ? isearcher.search(search.query, maxResults, search.sort)
-					: isearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, false);
-			hits = topFieldDocs.scoreDocs;
-			totalHits = topFieldDocs.totalHits;
-			fields = topFieldDocs.fields;
-		}
-		Float maxScore;
-		if (hits.length == 0) {
-			maxScore = Float.NaN;
-		} else {
+		TopFieldDocs topFieldDocs = searchAfterDoc == null
+				? isearcher.search(search.query, maxResults, search.sort, search.scored)
+				: isearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, search.scored);
+		ScoreDoc[] hits = topFieldDocs.scoreDocs;
+		TotalHits totalHits = topFieldDocs.totalHits;
+		SortField[] fields = topFieldDocs.fields;
+		Float maxScore = Float.NaN;
+		if (hits.length > 0) {
 			maxScore = hits[0].score;
 		}
 		logger.debug("Hits " + totalHits + " maxscore " + maxScore);
@@ -1259,10 +1245,15 @@ public class Lucene {
 					Document lastDocument = isearcher.doc(lastDoc.doc);
 					gen.writeStartArray("fields");
 					for (SortField sortField : fields) {
-						IndexableField indexableField = lastDocument.getField(sortField.getField());
+						String fieldName = sortField.getField();
+						if (fieldName == null) {
+							// SCORE sorting will have a null fieldName
+							gen.write(lastDoc.score);
+							continue;
+						}
+						IndexableField indexableField = lastDocument.getField(fieldName);
 						if (indexableField == null) {
-							throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Field "
-									+ sortField.getField()
+							throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Field " + fieldName
 									+ " used for sorting was not present on the Lucene Document; all sortable fields must also be stored.");
 						}
 						Type type = (sortField instanceof SortedNumericSortField)
@@ -1390,25 +1381,29 @@ public class Lucene {
 				// number don't convert
 				return;
 			}
-			try {
-				logger.trace("Attempting to convert {} {}", value, unitString);
-				Unit<?> unit = unitFormat.parse(unitString);
-				Unit<?> systemUnit = unit.getSystemUnit();
-				UnitConverter converter = unit.getConverterToAny(systemUnit);
-				Double systemValue = converter.convert(value);
-				document.add(new DoublePoint("numericValueSI", systemValue));
-				document.add(new StoredField("numericValueSI", systemValue));
-				long sortableLong = NumericUtils.doubleToSortableLong(systemValue);
+			logger.trace("Attempting to convert {} {}", value, unitString);
+			SystemValue systemValue = icatUnits.new SystemValue(value, unitString);
+			if (systemValue.units != null) {
+				document.add(new StringField("type.unitsSI", systemValue.units, Store.YES));
+			}
+			if (systemValue.value != null) {
+				document.add(new DoublePoint("numericValueSI", systemValue.value));
+				document.add(new StoredField("numericValueSI", systemValue.value));
+				long sortableLong = NumericUtils.doubleToSortableLong(systemValue.value);
 				document.add(new NumericDocValuesField("numericValueSI", sortableLong));
-				document.add(new StringField("type.unitsSI", systemUnit.getName(), Store.YES));
-			} catch (IncommensurableException | MeasurementParseException e) {
-				logger.error("Unable to convert 'type.units' of {} due to {}", unitString, e.getMessage());
 			}
 		}
 	}
 
 	private void addSortField(JsonObject json, Document document, String key) {
 		if (sortFields.contains(key)) {
+			if (key.equals("id")) {
+				// Id is a special case, as we need to to be SORTED as a byte ref to allow joins
+				// but also SORTED_NUMERIC to ensure a deterministic order to results
+				Long value = new Long(json.getString(key));
+				document.add(new NumericDocValuesField("id.long", value));
+				document.add(new StoredField("id.long", value));
+			}
 			if (longFields.contains(key)) {
 				document.add(new NumericDocValuesField(key, json.getJsonNumber(key).longValueExact()));
 			} else if (doubleFields.contains(key)) {
@@ -1423,6 +1418,13 @@ public class Lucene {
 	private void addSortField(IndexableField field, Document document) {
 		String key = field.name();
 		if (sortFields.contains(key)) {
+			if (key.equals("id")) {
+				// Id is a special case, as we need to to be SORTED as a byte ref to allow joins
+				// but also SORTED_NUMERIC to ensure a deterministic order to results
+				Long value = new Long(field.stringValue());
+				document.add(new NumericDocValuesField("id.long", value));
+				document.add(new StoredField("id.long", value));
+			}
 			if (longFields.contains(key)) {
 				document.add(new NumericDocValuesField(key, field.numericValue().longValue()));
 			} else if (doubleFields.contains(key)) {
@@ -1515,7 +1517,7 @@ public class Lucene {
 	 */
 	private Sort parseSort(String sort) throws LuceneException {
 		if (sort == null || sort.equals("")) {
-			return null;
+			return new Sort(SortField.FIELD_SCORE, new SortedNumericSortField("id.long", Type.LONG));
 		}
 		try (JsonReader reader = Json.createReader(new ByteArrayInputStream(sort.getBytes()))) {
 			JsonObject object = reader.readObject();
@@ -1540,6 +1542,7 @@ public class Lucene {
 					fields.add(new SortField(key, Type.STRING, reverse));
 				}
 			}
+			fields.add(new SortedNumericSortField("id.long", Type.LONG));
 			return new Sort(fields.toArray(new SortField[0]));
 		}
 	}
@@ -1557,42 +1560,42 @@ public class Lucene {
 	 *                         NUMBER
 	 */
 	private FieldDoc parseSearchAfter(String searchAfter) throws LuceneException {
-		if (searchAfter != null && !searchAfter.equals("")) {
-			logger.debug("Attempting to parseSearchAfter from {}", searchAfter);
-			JsonReader reader = Json.createReader(new StringReader(searchAfter));
-			JsonObject object = reader.readObject();
-			int doc = object.getInt("doc");
-			int shardIndex = object.getInt("shardIndex");
-			float score = Float.NaN;
-			List<Object> fields = new ArrayList<>();
-			if (object.containsKey("score")) {
-				score = object.getJsonNumber("score").bigDecimalValue().floatValue();
-			}
-			if (object.containsKey("fields")) {
-				JsonArray jsonArray = object.getJsonArray("fields");
-				for (JsonValue value : jsonArray) {
-					switch (value.getValueType()) {
-						case NUMBER:
-							JsonNumber number = ((JsonNumber) value);
-							if (number.toString().contains(".")) {
-								fields.add(number.doubleValue());
-							} else {
-								fields.add(number.longValueExact());
-							}
-							break;
-						case STRING:
-							fields.add(new BytesRef(((JsonString) value).getString()));
-							break;
-						default:
-							throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
-									"fields should be an array of STRING and NUMBER, but had entry of type "
-											+ value.getValueType());
-					}
+		if (searchAfter == null || searchAfter.equals("")) {
+			return null;
+		}
+		logger.debug("Attempting to parseSearchAfter from {}", searchAfter);
+		JsonReader reader = Json.createReader(new StringReader(searchAfter));
+		JsonObject object = reader.readObject();
+		int doc = object.getInt("doc");
+		int shardIndex = object.getInt("shardIndex");
+		float score = Float.NaN;
+		List<Object> fields = new ArrayList<>();
+		if (object.containsKey("score")) {
+			score = object.getJsonNumber("score").bigDecimalValue().floatValue();
+		}
+		if (object.containsKey("fields")) {
+			JsonArray jsonArray = object.getJsonArray("fields");
+			for (JsonValue value : jsonArray) {
+				switch (value.getValueType()) {
+					case NUMBER:
+						JsonNumber number = ((JsonNumber) value);
+						if (number.toString().contains(".")) {
+							fields.add(number.bigDecimalValue().floatValue());
+						} else {
+							fields.add(number.longValueExact());
+						}
+						break;
+					case STRING:
+						fields.add(new BytesRef(((JsonString) value).getString()));
+						break;
+					default:
+						throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
+								"fields should be an array of STRING and NUMBER, but had entry of type "
+										+ value.getValueType());
 				}
 			}
-			return new FieldDoc(doc, score, fields.toArray(), shardIndex);
 		}
-		return null;
+		return new FieldDoc(doc, score, fields.toArray(), shardIndex);
 	}
 
 	@POST
