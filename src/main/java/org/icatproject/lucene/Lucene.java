@@ -1213,12 +1213,10 @@ public class Lucene {
 	private String luceneSearchResult(String name, Search search, String searchAfter, int maxResults, Long uid)
 			throws IOException, LuceneException {
 		IndexSearcher isearcher = getSearcher(search.readerMap, name);
-		String format = "Search {} with: query {}, maxResults, searchAfter {}, scored {} ";
+		String format = "Search {} with: query {}, maxResults {}, searchAfter {}, scored {}";
 		logger.debug(format, name, search.query, maxResults, searchAfter, search.scored);
-		FieldDoc searchAfterDoc = parseSearchAfter(searchAfter);
-		TopFieldDocs topFieldDocs = searchAfterDoc == null
-				? isearcher.search(search.query, maxResults, search.sort, search.scored)
-				: isearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, search.scored);
+		FieldDoc searchAfterDoc = parseSearchAfter(searchAfter, search.sort.getSort());
+		TopFieldDocs topFieldDocs = isearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, search.scored);
 		ScoreDoc[] hits = topFieldDocs.scoreDocs;
 		TotalHits totalHits = topFieldDocs.totalHits;
 		SortField[] fields = topFieldDocs.fields;
@@ -1559,7 +1557,7 @@ public class Lucene {
 	 * @throws LuceneException If an entry in the fields array is not a STRING or
 	 *                         NUMBER
 	 */
-	private FieldDoc parseSearchAfter(String searchAfter) throws LuceneException {
+	private FieldDoc parseSearchAfter(String searchAfter, SortField[] sortFields) throws LuceneException {
 		if (searchAfter == null || searchAfter.equals("")) {
 			return null;
 		}
@@ -1575,14 +1573,32 @@ public class Lucene {
 		}
 		if (object.containsKey("fields")) {
 			JsonArray jsonArray = object.getJsonArray("fields");
-			for (JsonValue value : jsonArray) {
+			if (jsonArray.size() != sortFields.length) {
+				throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
+						"fields should have the same length as sort, but they were "
+								+ jsonArray.size() + " and " + sortFields.length);
+			}
+			for (int i = 0; i < sortFields.length; i++) {
+				JsonValue value = jsonArray.get(i);
 				switch (value.getValueType()) {
 					case NUMBER:
 						JsonNumber number = ((JsonNumber) value);
-						if (number.toString().contains(".")) {
-							fields.add(number.bigDecimalValue().floatValue());
-						} else {
-							fields.add(number.longValueExact());
+						switch (sortFields[i].getType()) {
+							case FLOAT:
+							case DOUBLE:
+							case SCORE:
+								fields.add(number.bigDecimalValue().floatValue());
+								break;
+							case INT:
+							case LONG:
+							case DOC:
+							case CUSTOM:
+								fields.add(number.longValueExact());
+								break;
+							default:
+								throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
+										"fields contained a NUMBER but the corresponding field was "
+												+ sortFields[i]);
 						}
 						break;
 					case STRING:
