@@ -30,11 +30,13 @@ import javax.annotation.PreDestroy;
 import javax.ejb.Singleton;
 import javax.json.Json;
 import javax.json.JsonArray;
+import javax.json.JsonException;
 import javax.json.JsonNumber;
 import javax.json.JsonObject;
 import javax.json.JsonObjectBuilder;
 import javax.json.JsonReader;
 import javax.json.JsonString;
+import javax.json.JsonStructure;
 import javax.json.JsonValue;
 import javax.json.JsonValue.ValueType;
 import javax.json.stream.JsonGenerator;
@@ -71,12 +73,9 @@ import org.apache.lucene.facet.range.Range;
 import org.apache.lucene.facet.sortedset.DefaultSortedSetDocValuesReaderState;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetCounts;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetField;
-import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
-import org.apache.lucene.index.MultiReader;
-import org.apache.lucene.index.ReaderManager;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.flexible.core.QueryNodeException;
 import org.apache.lucene.queryparser.flexible.standard.StandardQueryParser;
@@ -89,6 +88,7 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.SortedNumericSortField;
@@ -119,7 +119,8 @@ public class Lucene {
 	private class ShardBucket {
 		private FSDirectory directory;
 		private IndexWriter indexWriter;
-		private ReaderManager readerManager;
+		private SearcherManager searcherManager;
+		private AtomicLong documentCount;
 
 		/**
 		 * Creates a bucket for accessing the read and write functionality for a single
@@ -144,13 +145,29 @@ public class Lucene {
 				indexWriter.commit();
 				logger.debug("Now have " + indexWriter.getDocStats().numDocs + " documents indexed");
 			}
-			readerManager = new ReaderManager(indexWriter);
+			searcherManager = new SearcherManager(indexWriter, null);
+			IndexSearcher indexSearcher = null;
+			try {
+				indexSearcher = searcherManager.acquire();
+				int numDocs = indexSearcher.getIndexReader().numDocs();
+				documentCount = new AtomicLong(numDocs);
+			} finally {
+				searcherManager.release(indexSearcher);
+			}
+		}
+
+		public int commit() throws IOException {
+			int cached = indexWriter.numRamDocs();
+			indexWriter.commit();
+			searcherManager.maybeRefreshBlocking();
+			return cached;
 		}
 	}
 
 	private class IndexBucket {
 		private String entityName;
-		private Map<Long, ShardBucket> shardMap = new HashMap<>();
+		// private Map<Long, ShardBucket> shardMap = new HashMap<>();
+		private List<ShardBucket> shardList = new ArrayList<>();
 		private AtomicBoolean locked = new AtomicBoolean();
 
 		/**
@@ -168,7 +185,8 @@ public class Lucene {
 				java.nio.file.Path shardPath = luceneDirectory.resolve(entityName);
 				do {
 					ShardBucket shardBucket = new ShardBucket(shardPath);
-					shardMap.put(shardIndex, shardBucket);
+					// shardMap.put(shardIndex, shardBucket);
+					shardList.add(shardBucket);
 					shardIndex++;
 					shardPath = luceneDirectory.resolve(entityName + "_" + shardIndex);
 				} while (Files.isDirectory(shardPath));
@@ -185,12 +203,32 @@ public class Lucene {
 		 * @return Array of DirectoryReaders for all shards in this bucket.
 		 * @throws IOException
 		 */
-		public DirectoryReader[] acquireReaders() throws IOException {
-			List<DirectoryReader> subReaders = new ArrayList<>();
-			for (ShardBucket shardBucket : shardMap.values()) {
-				subReaders.add(shardBucket.readerManager.acquire());
+		// public DirectoryReader[] acquireReaders() throws IOException {
+		// 	List<DirectoryReader> subReaders = new ArrayList<>();
+		// 	for (ShardBucket shardBucket : shardMap.values()) {
+		// 		subReaders.add(shardBucket.searcherManager.acquire());
+		// 	}
+		// 	return subReaders.toArray(new DirectoryReader[0]);
+		// }
+
+		public List<IndexSearcher> acquireSearchers() throws IOException {
+			List<IndexSearcher> subSearchers = new ArrayList<>();
+			// for (ShardBucket shardBucket : shardMap.values()) {
+			for (ShardBucket shardBucket : shardList) {
+				subSearchers.add(shardBucket.searcherManager.acquire());
 			}
-			return subReaders.toArray(new DirectoryReader[0]);
+			return subSearchers;
+		}
+
+		public void addDocument(Document document) throws IOException {
+			ShardBucket shardBucket = routeShard();
+			shardBucket.indexWriter.addDocument(document);
+			shardBucket.documentCount.incrementAndGet();
+		}
+
+		public void updateDocument(Term term, Document document) throws IOException {
+			ShardBucket shardBucket = routeShard();
+			shardBucket.indexWriter.updateDocument(term, document);
 		}
 
 		/**
@@ -202,9 +240,9 @@ public class Lucene {
 		 * @return A new ShardBucket with the provided shardKey.
 		 * @throws IOException
 		 */
-		public ShardBucket buildShardBucket(Long shardKey) throws IOException {
+		public ShardBucket buildShardBucket(int shardKey) throws IOException {
 			ShardBucket shardBucket = new ShardBucket(luceneDirectory.resolve(entityName + "_" + shardKey));
-			shardMap.put(shardKey, shardBucket);
+			shardList.add(shardBucket);
 			return shardBucket;
 		}
 
@@ -218,15 +256,13 @@ public class Lucene {
 		 * @throws IOException
 		 */
 		public void commit(String command, String entityName) throws IOException {
-			for (Entry<Long, ShardBucket> entry : shardMap.entrySet()) {
-				ShardBucket shardBucket = entry.getValue();
-				int cached = shardBucket.indexWriter.numRamDocs();
-				shardBucket.indexWriter.commit();
+			// for (Entry<Long, ShardBucket> entry : shardMap.entrySet()) {
+			for (ShardBucket shardBucket : shardList) {
+				int cached = shardBucket.commit();
 				if (cached != 0) {
-					logger.debug("{} has committed {} {} changes to Lucene - now have {} documents indexed in shard {}",
-							command, cached, entityName, shardBucket.indexWriter.getDocStats().numDocs, entry.getKey());
+					logger.debug("{} has committed {} {} changes to Lucene - now have {} documents indexed in {}",
+							command, cached, entityName, shardBucket.indexWriter.getDocStats().numDocs, shardBucket.directory.getDirectory().toString());
 				}
-				shardBucket.readerManager.maybeRefreshBlocking();
 			}
 		}
 
@@ -236,8 +272,9 @@ public class Lucene {
 		 * @throws IOException
 		 */
 		public void close() throws IOException {
-			for (ShardBucket shardBucket : shardMap.values()) {
-				shardBucket.readerManager.close();
+			// for (ShardBucket shardBucket : shardMap.values()) {
+			for (ShardBucket shardBucket : shardList) {
+				shardBucket.searcherManager.close();
 				shardBucket.indexWriter.commit();
 				shardBucket.indexWriter.close();
 				shardBucket.directory.close();
@@ -254,15 +291,22 @@ public class Lucene {
 		 * @return The ShardBucket that the relevant Document is/should be indexed in.
 		 * @throws IOException
 		 */
-		public ShardBucket routeShard(Long id) throws IOException {
-			if (id == null) {
-				// If we don't have id, provide the first bucket
-				return shardMap.get(0L);
-			}
-			Long shard = id / luceneMaxShardSize;
-			ShardBucket shardBucket = shardMap.get(shard);
-			if (shardBucket == null) {
-				shardBucket = buildShardBucket(shard);
+		public ShardBucket routeShard() throws IOException {
+			// if (id == null || !shardedIndices.contains(entityName.toLowerCase())) {
+			// 	// If we don't have id, provide the first bucket
+			// 	return shardMap.get(0L);
+			// }
+			// Long shard = id / luceneMaxShardSize;
+			// ShardBucket shardBucket = shardMap.get(shard);
+			// if (shardBucket == null) {
+			// 	shardBucket = buildShardBucket(shard);
+			// }
+			// return shardBucket;
+			int size = shardList.size();
+			ShardBucket shardBucket = shardList.get(size - 1);
+			if (shardBucket.documentCount.get() >= luceneMaxShardSize) {
+				shardBucket.indexWriter.commit();
+				shardBucket = buildShardBucket(size);
 			}
 			return shardBucket;
 		}
@@ -275,31 +319,75 @@ public class Lucene {
 		 * @return The relevant IndexWriter.
 		 * @throws IOException
 		 */
-		public IndexWriter getWriter(Long id) throws IOException {
-			return routeShard(id).indexWriter;
-		}
+		// public IndexWriter getWriter(String entityName, Long id) throws IOException {
+		// 	return routeShard(entityName, id).indexWriter;
+		// }
 
-		public void releaseReaders(DirectoryReader[] subReaders) throws IOException, LuceneException {
-			if (subReaders.length != shardMap.size()) {
+		public void releaseReaders(List<IndexSearcher> subSearchers) throws IOException, LuceneException {
+			if (subSearchers.size() != shardList.size()) {
 				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR,
 						"Was expecting the same number of DirectoryReaders as ShardBuckets, but had "
-								+ subReaders.length + ", " + shardMap.size() + " respectively.");
+								+ subSearchers.size() + ", " + shardList.size() + " respectively.");
 			}
 			int i = 0;
-			for (ShardBucket shardBucket : shardMap.values()) {
-				shardBucket.readerManager.release(subReaders[i]);
+			for (ShardBucket shardBucket : shardList) {
+				shardBucket.searcherManager.release(subSearchers.get(i));
 				i++;
 			}
 		}
 	}
 
 	public class Search {
-		public Map<String, DirectoryReader[]> readerMap;
+		public Map<String, List<IndexSearcher>> searcherMap;
 		public Query query;
 		public Sort sort;
 		public boolean scored;
 		public Set<String> fields = new HashSet<String>();
 		public Set<FacetDimensionRequest> dimensions = new HashSet<FacetDimensionRequest>();
+		
+		/**
+		 * Parses the String from the request into a Lucene Sort object. Multiple sort
+		 * criteria are supported, and will be applied in order.
+		 * 
+		 * @param sortString String representation of a JSON object with the field(s) to sort
+		 *             as keys, and the direction ("asc" or "desc") as value(s).
+		 * @return Lucene Sort object
+		 * @throws LuceneException If the value for any key isn't "asc" or "desc"
+		 */
+		public void parseSort(String sortString) throws LuceneException {
+			if (sortString == null || sortString.equals("")|| sortString.equals("{}")) {
+				scored = true;
+				sort = new Sort(SortField.FIELD_SCORE, new SortedNumericSortField("id.long", Type.LONG));
+				return;
+			}
+			try (JsonReader reader = Json.createReader(new ByteArrayInputStream(sortString.getBytes()))) {
+				JsonObject object = reader.readObject();
+				List<SortField> fields = new ArrayList<>();
+				for (String key : object.keySet()) {
+					String order = object.getString(key);
+					Boolean reverse;
+					if (order.equals("asc")) {
+						reverse = false;
+					} else if (order.equals("desc")) {
+						reverse = true;
+					} else {
+						throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
+								"Sort order must be 'asc' or 'desc' but it was '" + order + "'");
+					}
+
+					if (longFields.contains(key)) {
+						fields.add(new SortedNumericSortField(key, Type.LONG, reverse));
+					} else if (doubleFields.contains(key)) {
+						fields.add(new SortedNumericSortField(key, Type.DOUBLE, reverse));
+					} else {
+						fields.add(new SortField(key, Type.STRING, reverse));
+					}
+				}
+				fields.add(new SortedNumericSortField("id.long", Type.LONG));
+				scored = false;
+				sort = new Sort(fields.toArray(new SortField[0]));
+			}
+		}
 	}
 
 	private static class ParentRelationship {
@@ -390,9 +478,10 @@ public class Lucene {
 	private final FacetsConfig facetsConfig = new FacetsConfig();
 
 	private java.nio.file.Path luceneDirectory;
-
+	private Set<String> shardedIndices;
 	private int luceneCommitMillis;
 	private Long luceneMaxShardSize;
+	private long maxSearchTimeSeconds;
 
 	private AtomicLong bucketNum = new AtomicLong();
 	private Map<String, IndexBucket> indexBuckets = new ConcurrentHashMap<>();
@@ -463,13 +552,17 @@ public class Lucene {
 	public void addNow(@Context HttpServletRequest request, @PathParam("entityName") String entityName)
 			throws LuceneException {
 		List<JsonObject> documents;
+		JsonStructure value = null;
 		logger.debug("Requesting addNow of {}", entityName);
 		try (JsonReader reader = Json.createReader(request.getInputStream())) {
-			documents = reader.readArray().getValuesAs(JsonObject.class);
+			value = reader.read();
+			documents = ((JsonArray) value).getValuesAs(JsonObject.class);
 			for (JsonObject document : documents) {
 				createNow(entityName, document);
 			}
-		} catch (IOException e) {
+		} catch (IOException | JsonException e) {
+			
+			logger.error("Could not parse JSON from {}", value.toString());
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 		logger.debug("Added {} {} documents", documents.size(), entityName);
@@ -564,7 +657,8 @@ public class Lucene {
 				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
 						"Lucene locked for " + entityName);
 			}
-			bucket.getWriter(new Long(icatId)).addDocument(facetsConfig.build(document));
+			// bucket.getWriter(entityName, new Long(icatId)).addDocument(facetsConfig.build(document));
+			bucket.addDocument(facetsConfig.build(document));
 		}
 	}
 
@@ -574,11 +668,12 @@ public class Lucene {
 			throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
 					"id was not in the document keys " + documentJson.keySet());
 		}
-		String icatId = documentJson.getString("id");
+		// String icatId = documentJson.getString("id");
 		Document document = parseDocument(documentJson);
 		logger.trace("create {} {}", entityName, document.toString());
 		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> new IndexBucket(k));
-		bucket.getWriter(new Long(icatId)).addDocument(facetsConfig.build(document));
+		// bucket.getWriter(entityName, new Long(icatId)).addDocument(facetsConfig.build(document));
+		bucket.addDocument(facetsConfig.build(document));
 	}
 
 	@POST
@@ -603,10 +698,9 @@ public class Lucene {
 			throws IOException, QueryNodeException, LuceneException {
 		Search search = new Search();
 		searches.put(uid, search);
-		Map<String, DirectoryReader[]> readerMap = new HashMap<>();
-		search.readerMap = readerMap;
-		search.scored = (sort == null || sort.equals(""));
-		search.sort = parseSort(sort);
+		Map<String, List<IndexSearcher>> readerMap = new HashMap<>();
+		search.searcherMap = readerMap;
+		search.parseSort(sort);
 
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
@@ -672,10 +766,9 @@ public class Lucene {
 			throws IOException, QueryNodeException, LuceneException {
 		Search search = new Search();
 		searches.put(uid, search);
-		Map<String, DirectoryReader[]> readerMap = new HashMap<>();
-		search.readerMap = readerMap;
-		search.scored = (sort == null || sort.equals(""));
-		search.sort = parseSort(sort);
+		Map<String, List<IndexSearcher>> readerMap = new HashMap<>();
+		search.searcherMap = readerMap;
+		search.parseSort(sort);
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
 			JsonObject query = o.getJsonObject("query");
@@ -749,8 +842,10 @@ public class Lucene {
 							"Lucene locked for " + entityName);
 				}
 				logger.trace("delete {} {}", entityName, icatId);
-				ShardBucket shardBucket = bucket.routeShard(new Long(icatId));
-				shardBucket.indexWriter.deleteDocuments(new Term("id", icatId));
+				for (ShardBucket shardBucket: bucket.shardList) {
+					shardBucket.indexWriter.deleteDocuments(new Term("id", icatId));
+				}
+				// ShardBucket shardBucket = bucket.routeShard(entityName, new Long(icatId));
 			} catch (IOException e) {
 				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 			}
@@ -826,7 +921,6 @@ public class Lucene {
 			Search search = genericQuery(request, sort, uid);
 			return luceneFacetResult(entityName, search, searchAfter, maxResults, maxLabels, uid);
 		} catch (Exception e) {
-			logger.error("Error", e);
 			freeSearcher(uid);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
@@ -834,10 +928,10 @@ public class Lucene {
 
 	public void freeSearcher(Long uid) throws LuceneException {
 		if (uid != null) { // May not be set for internal calls
-			Map<String, DirectoryReader[]> search = searches.get(uid).readerMap;
-			for (Entry<String, DirectoryReader[]> entry : search.entrySet()) {
+			Map<String, List<IndexSearcher>> search = searches.get(uid).searcherMap;
+			for (Entry<String, List<IndexSearcher>> entry : search.entrySet()) {
 				String name = entry.getKey();
-				DirectoryReader[] subReaders = entry.getValue();
+				List<IndexSearcher> subReaders = entry.getValue();
 				try {
 					indexBuckets.computeIfAbsent(name, k -> new IndexBucket(k)).releaseReaders(subReaders);
 				} catch (IOException e) {
@@ -866,10 +960,9 @@ public class Lucene {
 	private Search genericQuery(HttpServletRequest request, String sort, Long uid) throws IOException, LuceneException {
 		Search search = new Search();
 		searches.put(uid, search);
-		Map<String, DirectoryReader[]> readerMap = new HashMap<>();
-		search.readerMap = readerMap;
-		search.scored = (sort == null || sort.equals(""));
-		search.sort = parseSort(sort);
+		Map<String, List<IndexSearcher>> readerMap = new HashMap<>();
+		search.searcherMap = readerMap;
+		search.parseSort(sort);
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
 			JsonObject jsonQuery = o.getJsonObject("query");
@@ -974,18 +1067,23 @@ public class Lucene {
 		return search;
 	}
 
-	private MultiReader getMultiReader(Map<String, DirectoryReader[]> readerMap, String name) throws IOException {
-		DirectoryReader[] subReaders = readerMap.get(name);
-		if (subReaders == null) {
-			subReaders = indexBuckets.computeIfAbsent(name, k -> new IndexBucket(k)).acquireReaders();
-			readerMap.put(name, subReaders);
+	private List<IndexSearcher> getSearchers(Map<String, List<IndexSearcher>> readerMap, String name) throws IOException {
+		List<IndexSearcher> subSearchers = readerMap.get(name);
+		if (subSearchers == null) {
+			subSearchers = indexBuckets.computeIfAbsent(name, k -> new IndexBucket(k)).acquireSearchers();
+			readerMap.put(name, subSearchers);
 			logger.debug("Remember searcher for {}", name);
 		}
-		return new MultiReader(subReaders, false);
+		return subSearchers;
 	}
 
-	private IndexSearcher getSearcher(Map<String, DirectoryReader[]> readerMap, String name) throws IOException {
-		return new IndexSearcher(getMultiReader(readerMap, name));
+	private IndexSearcher getSearcher(Map<String, List<IndexSearcher>> readerMap, String name) throws IOException, LuceneException {
+		List<IndexSearcher> subSearchers = readerMap.get(name);
+		subSearchers = getSearchers(readerMap, name);
+		if (subSearchers.size() > 1) {
+			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Cannot get single IndexSearcher for " + name + " as it has " + subSearchers.size() + " shards");
+		}
+		return subSearchers.get(0);
 	}
 
 	@PostConstruct
@@ -1002,18 +1100,23 @@ public class Lucene {
 
 			luceneCommitMillis = props.getPositiveInt("commitSeconds") * 1000;
 			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), new Long(Integer.MAX_VALUE + 1));
+			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds") : 5;
 
 			timer = new Timer("LuceneCommitTimer");
 			timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
 
 			icatUnits = new IcatUnits(props.getString("units", ""));
 
+			String shardedIndicesString = props.getString("shardedIndices", "").toLowerCase();
+			shardedIndices = new HashSet<>(Arrays.asList(shardedIndicesString.split("\\s+")));
+
 		} catch (Exception e) {
 			logger.error(fatal, e.getMessage());
 			throw new IllegalStateException(e.getMessage());
 		}
 
-		logger.info("Initialised icat.lucene");
+		logger.info("Initialised icat.lucene with directory {}, commitSeconds {}, maxShardSize {}, shardedIndices {}, maxSearchTimeSeconds {}",
+				luceneDirectory, luceneCommitMillis, luceneMaxShardSize, shardedIndices, maxSearchTimeSeconds);
 	}
 
 	class CommitTimerTask extends TimerTask {
@@ -1049,10 +1152,9 @@ public class Lucene {
 			throws IOException, QueryNodeException, LuceneException {
 		Search search = new Search();
 		searches.put(uid, search);
-		Map<String, DirectoryReader[]> readerMap = new HashMap<>();
-		search.readerMap = readerMap;
-		search.scored = (sort == null || sort.equals(""));
-		search.sort = parseSort(sort);
+		Map<String, List<IndexSearcher>> readerMap = new HashMap<>();
+		search.searcherMap = readerMap;
+		search.parseSort(sort);
 		try (JsonReader r = Json.createReader(request.getInputStream())) {
 			JsonObject o = r.readObject();
 			JsonObject query = o.getJsonObject("query");
@@ -1130,7 +1232,7 @@ public class Lucene {
 			throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE, "Lucene already locked for " + entityName);
 		}
 		try {
-			for (ShardBucket shardBucket : bucket.shardMap.values()) {
+			for (ShardBucket shardBucket : bucket.shardList) {
 				shardBucket.indexWriter.deleteAll();
 			}
 		} catch (IOException e) {
@@ -1140,83 +1242,130 @@ public class Lucene {
 
 	private String luceneFacetResult(String name, Search search, String searchAfter, int maxResults, int maxLabels,
 			Long uid) throws IOException, IllegalStateException, LuceneException {
-		List<FacetResult> results = new ArrayList<>();
-		List<FacetResult> rangeResults = new ArrayList<>();
+		Map<String, Map<String, Long>> results = new HashMap<>();
+		Map<String, Map<String, Long>> rangeResults = new HashMap<>();
 		if (maxResults <= 0 || maxLabels <= 0) {
 			// This will result in no Facets and a null pointer, so return early
 			logger.warn("Cannot facet when maxResults={}, maxLabels={}, returning empty list", maxResults, maxLabels);
 		} else {
-			MultiReader directoryReader = getMultiReader(search.readerMap, name);
-			IndexSearcher indexSearcher = new IndexSearcher(directoryReader);
-			FacetsCollector facetsCollector = new FacetsCollector();
-			FacetsCollector.search(indexSearcher, search.query, maxResults, facetsCollector);
-			logger.debug("To facet in {} for {} {} with {} from {} ", name, search.query, maxResults, indexSearcher,
-					searchAfter);
-			for (FacetDimensionRequest facetDimensionRequest : search.dimensions) {
-				if (facetDimensionRequest.getRanges().size() > 0) {
-					String dimension = facetDimensionRequest.getDimension();
-					if (longFields.contains(dimension)) {
-						LongRange[] ranges = facetDimensionRequest.getRanges().toArray(new LongRange[0]);
-						Facets facets = new LongRangeFacetCounts(dimension, facetsCollector, ranges);
-						rangeResults.addAll(facets.getAllDims(maxLabels));
-					} else if (doubleFields.contains(dimension)) {
-						DoubleRange[] ranges = facetDimensionRequest.getRanges().toArray(new DoubleRange[0]);
-						Facets facets = new DoubleRangeFacetCounts(dimension, facetsCollector, ranges);
-						rangeResults.addAll(facets.getAllDims(maxLabels));
-					} else {
-						throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
-								"'ranges' specified for dimension " + dimension
-										+ " but this is not a supported numeric field");
+			List<IndexSearcher> searchers = getSearchers(search.searcherMap, name);
+			for (IndexSearcher indexSearcher : searchers) {
+				FacetsCollector facetsCollector = new FacetsCollector();
+				FacetsCollector.search(indexSearcher, search.query, maxResults, facetsCollector);
+				logger.debug("To facet in {} for {} {} with {} from {} ", name, search.query, maxResults, indexSearcher,
+						searchAfter);
+				for (FacetDimensionRequest facetDimensionRequest : search.dimensions) {
+					if (facetDimensionRequest.getRanges().size() > 0) {
+						String dimension = facetDimensionRequest.getDimension();
+						if (longFields.contains(dimension)) {
+							LongRange[] ranges = facetDimensionRequest.getRanges().toArray(new LongRange[0]);
+							Facets facets = new LongRangeFacetCounts(dimension, facetsCollector, ranges);
+							putFacets(maxLabels, rangeResults, facets);
+						} else if (doubleFields.contains(dimension)) {
+							DoubleRange[] ranges = facetDimensionRequest.getRanges().toArray(new DoubleRange[0]);
+							Facets facets = new DoubleRangeFacetCounts(dimension, facetsCollector, ranges);
+							putFacets(maxLabels, rangeResults, facets);
+						} else {
+							throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
+									"'ranges' specified for dimension " + dimension
+											+ " but this is not a supported numeric field");
+						}
 					}
 				}
-			}
-			try {
-				DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(directoryReader);
-				Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
-				logger.debug("facets: {}, maxLabels: {}, maxResults: {}", facets, maxLabels, maxResults);
-				results = facets.getAllDims(maxLabels);
-			} catch (IllegalArgumentException e) {
-				// This can occur if no fields in the index have been faceted
-				logger.error("No facets found in index, resulting in error: " + e.getClass() + " " + e.getMessage());
-			} catch (IllegalStateException e) {
-				// This can occur if we do not create the IndexSearcher from the same
-				// DirectoryReader as we used to create the state
-				logger.error("IndexSearcher used is not based on the DirectoryReader used for facet counting: "
-						+ e.getClass() + " " + e.getMessage());
-				throw e;
+				try {
+					DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(indexSearcher.getIndexReader());
+					Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
+					logger.debug("facets: {}, maxLabels: {}, maxResults: {}", facets, maxLabels, maxResults);
+					putFacets(maxLabels, results, facets);
+				} catch (IllegalArgumentException e) {
+					// This can occur if no fields in the index have been faceted
+					logger.error("No facets found in index, resulting in error: " + e.getClass() + " " + e.getMessage());
+				} catch (IllegalStateException e) {
+					// This can occur if we do not create the IndexSearcher from the same
+					// DirectoryReader as we used to create the state
+					logger.error("IndexSearcher used is not based on the DirectoryReader used for facet counting: "
+							+ e.getClass() + " " + e.getMessage());
+					throw e;
+				}
 			}
 			logger.debug("Facets found for " + results.size() + " dimensions");
 		}
 		Set<String> dimensionSet = new HashSet<>();
 		search.dimensions.forEach(d -> dimensionSet.add(d.getDimension()));
 		JsonObjectBuilder aggregationsBuilder = Json.createObjectBuilder();
-		for (FacetResult result : results) {
-			if (dimensionSet.size() == 0 || dimensionSet.contains(result.dim)) {
-				buildBuckets(aggregationsBuilder, result);
+		for (Entry<String, Map<String, Long>> dimensionEntry : results.entrySet()) {
+			if (dimensionSet.size() == 0 || dimensionSet.contains(dimensionEntry.getKey())) {
+				buildBuckets(aggregationsBuilder, dimensionEntry);
 			}
 		}
-		for (FacetResult result : rangeResults) {
-			buildBuckets(aggregationsBuilder, result);
+		for (Entry<String, Map<String, Long>> dimensionEntry : results.entrySet()) {
+			buildBuckets(aggregationsBuilder, dimensionEntry);
 		}
 		return Json.createObjectBuilder().add("aggregations", aggregationsBuilder).build().toString();
 	}
 
-	private void buildBuckets(JsonObjectBuilder aggregationsBuilder, FacetResult result) {
-		JsonObjectBuilder bucketsBuilder = Json.createObjectBuilder();
-		for (LabelAndValue labelValue : result.labelValues) {
-			JsonObjectBuilder bucketBuilder = Json.createObjectBuilder();
-			bucketsBuilder.add(labelValue.label, bucketBuilder.add("doc_count", labelValue.value.longValue()));
+	private void putFacets(int maxLabels, Map<String, Map<String, Long>> rangeResults, Facets facets)
+			throws IOException {
+		for (FacetResult result : facets.getAllDims(maxLabels)) {
+			String dim = result.dim;
+			if (rangeResults.containsKey(dim)) {
+				Map<String, Long> labelMap = rangeResults.get(dim);
+				for (LabelAndValue labelAndValue : result.labelValues) {
+					String label = labelAndValue.label;
+					if (labelMap.containsKey(label)) {
+						labelMap.put(label, labelMap.get(label) + labelAndValue.value.longValue());
+					} else {
+						labelMap.put(label, labelAndValue.value.longValue());
+					}
+				}
+			} else {
+				Map<String, Long> labelMap = new HashMap<>();
+				for (LabelAndValue labelAndValue : result.labelValues) {
+					labelMap.put(labelAndValue.label, labelAndValue.value.longValue());
+				}
+				rangeResults.put(dim, labelMap);
+			}
 		}
-		aggregationsBuilder.add(result.dim, Json.createObjectBuilder().add("buckets", bucketsBuilder));
+	}
+
+	private void buildBuckets(JsonObjectBuilder aggregationsBuilder, Entry<String, Map<String, Long>> result) {
+		JsonObjectBuilder bucketsBuilder = Json.createObjectBuilder();
+		for (Entry<String, Long> labelValue : result.getValue().entrySet()) {
+			JsonObjectBuilder bucketBuilder = Json.createObjectBuilder();
+			bucketsBuilder.add(labelValue.getKey(), bucketBuilder.add("doc_count", labelValue.getValue()));
+		}
+		aggregationsBuilder.add(result.getKey(), Json.createObjectBuilder().add("buckets", bucketsBuilder));
 	}
 
 	private String luceneSearchResult(String name, Search search, String searchAfter, int maxResults, Long uid)
 			throws IOException, LuceneException {
-		IndexSearcher isearcher = getSearcher(search.readerMap, name);
+		List<IndexSearcher> searchers = getSearchers(search.searcherMap, name);
 		String format = "Search {} with: query {}, maxResults {}, searchAfter {}, scored {}";
 		logger.debug(format, name, search.query, maxResults, searchAfter, search.scored);
 		FieldDoc searchAfterDoc = parseSearchAfter(searchAfter, search.sort.getSort());
-		TopFieldDocs topFieldDocs = isearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, search.scored);
+		TopFieldDocs topFieldDocs;
+		if (searchers.size() > 0) {
+			List<TopFieldDocs> shardHits = new ArrayList<>();
+			int i = 0;
+			long startTime = System.currentTimeMillis();
+			for (IndexSearcher indexSearcher : searchers) {
+				// checkMaxMatches(name, search, indexSearcher);
+				TopFieldDocs shardDocs = indexSearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, search.scored);
+				shardHits.add(shardDocs);
+				logger.debug("{} hits on shard {} out of {} total docs", shardDocs.totalHits, i, indexSearcher.getIndexReader().numDocs());
+				i++;
+				long duration = (System.currentTimeMillis() - startTime);
+				if (duration > maxSearchTimeSeconds * 1000) {
+					logger.info("Stopping search after {} shards due to {} ms having elapsed", i, duration);
+					break;
+				} 
+			}
+			topFieldDocs = TopFieldDocs.merge(search.sort, 0, maxResults, shardHits.toArray(new TopFieldDocs[i]), true);
+		} else {
+			IndexSearcher indexSearcher = searchers.get(0);
+			// checkMaxMatches(name, search, indexSearcher);
+			topFieldDocs = indexSearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, search.scored);
+		}
 		ScoreDoc[] hits = topFieldDocs.scoreDocs;
 		TotalHits totalHits = topFieldDocs.totalHits;
 		SortField[] fields = topFieldDocs.fields;
@@ -1229,7 +1378,7 @@ public class Lucene {
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject().writeStartArray("results");
 			for (ScoreDoc hit : hits) {
-				encodeResult(gen, hit, isearcher, search);
+				encodeResult(gen, hit, searchers.get(hit.shardIndex), search);
 			}
 			gen.writeEnd(); // array results
 			if (hits.length == maxResults) {
@@ -1240,7 +1389,7 @@ public class Lucene {
 					gen.write("score", lastScore);
 				}
 				if (fields != null) {
-					Document lastDocument = isearcher.doc(lastDoc.doc);
+					Document lastDocument = searchers.get(lastDoc.shardIndex).doc(lastDoc.doc);
 					gen.writeStartArray("fields");
 					for (SortField sortField : fields) {
 						String fieldName = sortField.getField();
@@ -1278,9 +1427,16 @@ public class Lucene {
 			}
 			gen.writeEnd(); // end enclosing object
 		}
-		logger.debug("Json returned {}", baos.toString());
+		logger.trace("Json returned {}", baos.toString());
 		return baos.toString();
 	}
+
+	// private void checkMaxMatches(String name, Search search, IndexSearcher indexSearcher)
+	// 		throws IOException, LuceneException {
+	// 	if (shardedIndices.contains(name.toLowerCase()) && indexSearcher.count(search.query) > luceneMaxMatchingDocuments) {
+	// 		throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Query exceeded the maximum number of matching documents " + luceneMaxMatchingDocuments);
+	// 	}
+	// }
 
 	private Query maybeEmptyQuery(Builder theQuery) {
 		Query query = theQuery.build();
@@ -1402,6 +1558,7 @@ public class Lucene {
 				document.add(new NumericDocValuesField("id.long", value));
 				document.add(new StoredField("id.long", value));
 			}
+			// TODO add special case for startDate -> date to make sorting easier
 			if (longFields.contains(key)) {
 				document.add(new NumericDocValuesField(key, json.getJsonNumber(key).longValueExact()));
 			} else if (doubleFields.contains(key)) {
@@ -1505,47 +1662,6 @@ public class Lucene {
 	}
 
 	/**
-	 * Parses the String from the request into a Lucene Sort object. Multiple sort
-	 * criteria are supported, and will be applied in order.
-	 * 
-	 * @param sort String representation of a JSON object with the field(s) to sort
-	 *             as keys, and the direction ("asc" or "desc") as value(s).
-	 * @return Lucene Sort object
-	 * @throws LuceneException If the value for any key isn't "asc" or "desc"
-	 */
-	private Sort parseSort(String sort) throws LuceneException {
-		if (sort == null || sort.equals("")) {
-			return new Sort(SortField.FIELD_SCORE, new SortedNumericSortField("id.long", Type.LONG));
-		}
-		try (JsonReader reader = Json.createReader(new ByteArrayInputStream(sort.getBytes()))) {
-			JsonObject object = reader.readObject();
-			List<SortField> fields = new ArrayList<>();
-			for (String key : object.keySet()) {
-				String order = object.getString(key);
-				Boolean reverse;
-				if (order.equals("asc")) {
-					reverse = false;
-				} else if (order.equals("desc")) {
-					reverse = true;
-				} else {
-					throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
-							"Sort order must be 'asc' or 'desc' but it was '" + order + "'");
-				}
-
-				if (longFields.contains(key)) {
-					fields.add(new SortedNumericSortField(key, Type.LONG, reverse));
-				} else if (doubleFields.contains(key)) {
-					fields.add(new SortedNumericSortField(key, Type.DOUBLE, reverse));
-				} else {
-					fields.add(new SortField(key, Type.STRING, reverse));
-				}
-			}
-			fields.add(new SortedNumericSortField("id.long", Type.LONG));
-			return new Sort(fields.toArray(new SortField[0]));
-		}
-	}
-
-	/**
 	 * Parses a Lucene ScoreDoc to be "searched after" from a String representation
 	 * of a JSON array.
 	 * 
@@ -1564,7 +1680,6 @@ public class Lucene {
 		logger.debug("Attempting to parseSearchAfter from {}", searchAfter);
 		JsonReader reader = Json.createReader(new StringReader(searchAfter));
 		JsonObject object = reader.readObject();
-		int doc = object.getInt("doc");
 		int shardIndex = object.getInt("shardIndex");
 		float score = Float.NaN;
 		List<Object> fields = new ArrayList<>();
@@ -1611,7 +1726,7 @@ public class Lucene {
 				}
 			}
 		}
-		return new FieldDoc(doc, score, fields.toArray(), shardIndex);
+		return new FieldDoc(0, score, fields.toArray(), shardIndex); // TODO
 	}
 
 	@POST
@@ -1644,7 +1759,8 @@ public class Lucene {
 						"Lucene locked for " + entityName);
 			}
 			logger.trace("update: {}", document);
-			bucket.getWriter(new Long(icatId)).updateDocument(new Term("id", icatId), facetsConfig.build(document));
+			// bucket.getWriter(entityName, new Long(icatId)).updateDocument(new Term("id", icatId), facetsConfig.build(document));
+			bucket.updateDocument(new Term("id", icatId), facetsConfig.build(document));
 		}
 	}
 
@@ -1671,8 +1787,9 @@ public class Lucene {
 					Document newDocument = delete ? pruneDocument(parentRelationship.fieldPrefix, oldDocument)
 							: updateDocument(operationBody.getJsonObject("doc"), oldDocument);
 					logger.trace("updateByRelation: {}", newDocument);
-					bucket.getWriter(new Long(parentId)).updateDocument(new Term("id", parentId),
-							facetsConfig.build(newDocument));
+					// bucket.getWriter(parentRelationship.parentName, new Long(parentId)).updateDocument(new Term("id", parentId),
+					// 		facetsConfig.build(newDocument));
+					bucket.updateDocument(new Term("id", parentId), facetsConfig.build(newDocument));
 				}
 				scoreDocs = searcher.searchAfter(scoreDocs[scoreDocs.length - 1], query, blockSize, sort).scoreDocs;
 			}
