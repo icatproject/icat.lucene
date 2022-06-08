@@ -24,6 +24,7 @@ import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
@@ -197,23 +198,14 @@ public class Lucene {
 		}
 
 		/**
-		 * Acquires DirectoryReaders from the ReaderManagers of the individual shards in
+		 * Acquires IndexSearchers from the SearcherManagers of the individual shards in
 		 * this bucket.
 		 * 
 		 * @return Array of DirectoryReaders for all shards in this bucket.
 		 * @throws IOException
 		 */
-		// public DirectoryReader[] acquireReaders() throws IOException {
-		// 	List<DirectoryReader> subReaders = new ArrayList<>();
-		// 	for (ShardBucket shardBucket : shardMap.values()) {
-		// 		subReaders.add(shardBucket.searcherManager.acquire());
-		// 	}
-		// 	return subReaders.toArray(new DirectoryReader[0]);
-		// }
-
 		public List<IndexSearcher> acquireSearchers() throws IOException {
 			List<IndexSearcher> subSearchers = new ArrayList<>();
-			// for (ShardBucket shardBucket : shardMap.values()) {
 			for (ShardBucket shardBucket : shardList) {
 				subSearchers.add(shardBucket.searcherManager.acquire());
 			}
@@ -256,12 +248,13 @@ public class Lucene {
 		 * @throws IOException
 		 */
 		public void commit(String command, String entityName) throws IOException {
-			// for (Entry<Long, ShardBucket> entry : shardMap.entrySet()) {
 			for (ShardBucket shardBucket : shardList) {
 				int cached = shardBucket.commit();
 				if (cached != 0) {
+					int numDocs = shardBucket.indexWriter.getDocStats().numDocs;
+					String directoryName = shardBucket.directory.getDirectory().toString();
 					logger.debug("{} has committed {} {} changes to Lucene - now have {} documents indexed in {}",
-							command, cached, entityName, shardBucket.indexWriter.getDocStats().numDocs, shardBucket.directory.getDirectory().toString());
+							command, cached, entityName, numDocs, directoryName);
 				}
 			}
 		}
@@ -282,26 +275,15 @@ public class Lucene {
 		}
 
 		/**
-		 * Provides the ShardBucket that should be used for reading/writing the Document
-		 * with the provided id. All ids up to luceneMaxShardSize are indexed in the
-		 * first shard, after that a new shard is created for the next
-		 * luceneMaxShardSize Documents and so on.
+		 * Provides the ShardBucket that should be used for writing the next Document.
+		 * All Documents up to luceneMaxShardSize are indexed in the first shard, after
+		 * that a new shard is created for the next luceneMaxShardSize Documents and so
+		 * on.
 		 * 
-		 * @param id The id of a Document to be routed.
 		 * @return The ShardBucket that the relevant Document is/should be indexed in.
 		 * @throws IOException
 		 */
 		public ShardBucket routeShard() throws IOException {
-			// if (id == null || !shardedIndices.contains(entityName.toLowerCase())) {
-			// 	// If we don't have id, provide the first bucket
-			// 	return shardMap.get(0L);
-			// }
-			// Long shard = id / luceneMaxShardSize;
-			// ShardBucket shardBucket = shardMap.get(shard);
-			// if (shardBucket == null) {
-			// 	shardBucket = buildShardBucket(shard);
-			// }
-			// return shardBucket;
 			int size = shardList.size();
 			ShardBucket shardBucket = shardList.get(size - 1);
 			if (shardBucket.documentCount.get() >= luceneMaxShardSize) {
@@ -310,18 +292,6 @@ public class Lucene {
 			}
 			return shardBucket;
 		}
-
-		/**
-		 * Provides the IndexWriter that should be used for writing the Document with
-		 * the provided id.
-		 * 
-		 * @param id The id of a Document to be routed.
-		 * @return The relevant IndexWriter.
-		 * @throws IOException
-		 */
-		// public IndexWriter getWriter(String entityName, Long id) throws IOException {
-		// 	return routeShard(entityName, id).indexWriter;
-		// }
 
 		public void releaseReaders(List<IndexSearcher> subSearchers) throws IOException, LuceneException {
 			if (subSearchers.size() != shardList.size()) {
@@ -343,19 +313,45 @@ public class Lucene {
 		public Sort sort;
 		public boolean scored;
 		public Set<String> fields = new HashSet<String>();
+		public Map<String, Set<String>> joinedFields = new HashMap<>();
 		public Set<FacetDimensionRequest> dimensions = new HashSet<FacetDimensionRequest>();
-		
+
+		public void parseFields(JsonObject jsonObject) throws LuceneException {
+			if (jsonObject.containsKey("fields")) {
+				List<JsonString> fieldStrings = jsonObject.getJsonArray("fields").getValuesAs(JsonString.class);
+				logger.trace("Parsing fields from {}", fieldStrings);
+				for (JsonString jsonString : fieldStrings) {
+					String[] splitString = jsonString.getString().split(" ");
+					if (splitString.length == 1) {
+						fields.add(splitString[0]);
+					} else if (splitString.length == 2) {
+						if (joinedFields.containsKey(splitString[0])) {
+							joinedFields.get(splitString[0]).add(splitString[1]);
+						} else {
+							joinedFields.putIfAbsent(splitString[0],
+									new HashSet<String>(Arrays.asList(splitString[1])));
+						}
+					} else {
+						throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
+								"Could not parse field: " + jsonString.getString());
+					}
+				}
+			}
+
+		}
+
 		/**
 		 * Parses the String from the request into a Lucene Sort object. Multiple sort
 		 * criteria are supported, and will be applied in order.
 		 * 
-		 * @param sortString String representation of a JSON object with the field(s) to sort
-		 *             as keys, and the direction ("asc" or "desc") as value(s).
+		 * @param sortString String representation of a JSON object with the field(s) to
+		 *                   sort
+		 *                   as keys, and the direction ("asc" or "desc") as value(s).
 		 * @return Lucene Sort object
 		 * @throws LuceneException If the value for any key isn't "asc" or "desc"
 		 */
 		public void parseSort(String sortString) throws LuceneException {
-			if (sortString == null || sortString.equals("")|| sortString.equals("{}")) {
+			if (sortString == null || sortString.equals("") || sortString.equals("{}")) {
 				scored = true;
 				sort = new Sort(SortField.FIELD_SCORE, new SortedNumericSortField("id.long", Type.LONG));
 				return;
@@ -426,16 +422,21 @@ public class Lucene {
 
 		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI"));
 		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name"));
-		longFields.addAll(Arrays.asList("date", "startDate", "endDate", "dateTimeValue"));
-		sortFields.addAll(Arrays.asList("datafile.id", "dataset.id", "investigation.id", "id", "date", "startDate",
-				"endDate", "name", "stringValue", "dateTimeValue", "numericValue", "numericValueSI"));
-		textFields.addAll(Arrays.asList("name", "visitId", "description", "datafileFormat.name", "sample.name",
-				"sample.type.name", "title", "summary", "facility.name", "user.fullName"));
+		longFields.addAll(Arrays.asList("date", "startDate", "endDate", "dateTimeValue", "investigation.startDate"));
+		sortFields.addAll(Arrays.asList("datafile.id", "dataset.id", "investigation.id", "instrument.id", "id", "date",
+				"startDate", "endDate", "name", "stringValue", "dateTimeValue", "numericValue", "numericValueSI"));
+		textFields.addAll(Arrays.asList("name", "visitId", "description", "location", "dataset.name",
+				"investigation.name", "instrument.name", "isntrument.fullName", "datafileFormat.name", "sample.name",
+				"sample.type.name", "title", "summary", "facility.name", "user.fullName", "type.name"));
 
 		indexedEntities.addAll(Arrays.asList("Datafile", "Dataset", "Investigation", "DatafileParameter",
-				"DatasetParameter", "InvestigationParameter", "InvestigationUser", "Sample"));
+				"DatasetParameter", "InstrumentScientist", "InvestigationInstrument", "InvestigationParameter",
+				"InvestigationUser", "Sample"));
 
-		relationships.put("User", new ParentRelationship[] { new ParentRelationship("InvestigationUser", "user") });
+		relationships.put("Instrument",
+				new ParentRelationship[] { new ParentRelationship("InvestigationInstrument", "instrument") });
+		relationships.put("User", new ParentRelationship[] { new ParentRelationship("InvestigationUser", "user"),
+				new ParentRelationship("InstrumentScientist", "user") });
 		relationships.put("Sample", new ParentRelationship[] { new ParentRelationship("Dataset", "sample") });
 		relationships.put("SampleType", new ParentRelationship[] { new ParentRelationship("Sample", "type"),
 				new ParentRelationship("Dataset", "sample.type") });
@@ -449,11 +450,14 @@ public class Lucene {
 				new ParentRelationship[] { new ParentRelationship("DatafileParameter", "type"),
 						new ParentRelationship("DatasetParameter", "type"),
 						new ParentRelationship("InvestigationParameter", "type") });
+		relationships.put("Investigation",
+				new ParentRelationship[] { new ParentRelationship("Dataset", "investigation"),
+						new ParentRelationship("datafile", "investigation") });
 
 		genericParser.setAllowLeadingWildcard(true);
 		genericParser.setAnalyzer(analyzer);
 
-		CharSequence[] datafileFields = { "name", "description", "doi", "datafileFormat.name" };
+		CharSequence[] datafileFields = { "name", "description", "doi", "location", "datafileFormat.name" };
 		datafileParser.setAllowLeadingWildcard(true);
 		datafileParser.setAnalyzer(analyzer);
 		datafileParser.setMultiFields(datafileFields);
@@ -561,7 +565,7 @@ public class Lucene {
 				createNow(entityName, document);
 			}
 		} catch (IOException | JsonException e) {
-			
+
 			logger.error("Could not parse JSON from {}", value.toString());
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
@@ -597,6 +601,21 @@ public class Lucene {
 				queryBuilder.add(LongPoint.newRangeQuery(field, lower, upper), Occur.MUST);
 			}
 		}
+	}
+
+	private void buildUserNameQuery(Map<String, List<IndexSearcher>> readerMap, String userName,
+			BooleanQuery.Builder theQuery, String toField)
+			throws IOException, LuceneException {
+		TermQuery fromQuery = new TermQuery(new Term("user.name", userName));
+		Query investigationUserQuery = JoinUtil.createJoinQuery("investigation.id", false, toField, fromQuery,
+				getSearcher(readerMap, "InvestigationUser"), ScoreMode.None);
+		Query instrumentScientistQuery = JoinUtil.createJoinQuery("instrument.id", false, "instrument.id", fromQuery,
+				getSearcher(readerMap, "InstrumentScientist"), ScoreMode.None);
+		Query investigationInstrumentQuery = JoinUtil.createJoinQuery("investigation.id", false, toField,
+				instrumentScientistQuery, getSearcher(readerMap, "InvestigationInstrument"), ScoreMode.None);
+		Builder userNameQueryBuilder = new BooleanQuery.Builder();
+		userNameQueryBuilder.add(investigationUserQuery, Occur.SHOULD).add(investigationInstrumentQuery, Occur.SHOULD);
+		theQuery.add(userNameQueryBuilder.build(), Occur.MUST);
 	}
 
 	/*
@@ -649,7 +668,6 @@ public class Lucene {
 			updateByRelation(operationBody, false);
 		}
 		if (indexedEntities.contains(entityName)) {
-			String icatId = operationBody.getString("_id");
 			Document document = parseDocument(operationBody.getJsonObject("doc"));
 			logger.trace("create {} {}", entityName, document.toString());
 			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> new IndexBucket(k));
@@ -657,7 +675,6 @@ public class Lucene {
 				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
 						"Lucene locked for " + entityName);
 			}
-			// bucket.getWriter(entityName, new Long(icatId)).addDocument(facetsConfig.build(document));
 			bucket.addDocument(facetsConfig.build(document));
 		}
 	}
@@ -668,11 +685,9 @@ public class Lucene {
 			throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
 					"id was not in the document keys " + documentJson.keySet());
 		}
-		// String icatId = documentJson.getString("id");
 		Document document = parseDocument(documentJson);
 		logger.trace("create {} {}", entityName, document.toString());
 		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> new IndexBucket(k));
-		// bucket.getWriter(entityName, new Long(icatId)).addDocument(facetsConfig.build(document));
 		bucket.addDocument(facetsConfig.build(document));
 	}
 
@@ -710,10 +725,7 @@ public class Lucene {
 			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
 			if (userName != null) {
-				Query iuQuery = JoinUtil.createJoinQuery("investigation.id", false, "investigation.id",
-						new TermQuery(new Term("user.name", userName)), getSearcher(readerMap, "InvestigationUser"),
-						ScoreMode.None);
-				theQuery.add(iuQuery, Occur.MUST);
+				buildUserNameQuery(readerMap, userName, theQuery, "investigation.id");
 			}
 
 			String text = query.getString("text", null);
@@ -734,10 +746,7 @@ public class Lucene {
 				}
 			}
 			search.query = maybeEmptyQuery(theQuery);
-			if (o.containsKey("fields")) {
-				List<JsonString> jsonStrings = o.getJsonArray("fields").getValuesAs(JsonString.class);
-				jsonStrings.forEach((jsonString) -> search.fields.add(jsonString.getString()));
-			}
+			search.parseFields(o);
 		}
 		return search;
 	}
@@ -777,12 +786,7 @@ public class Lucene {
 			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
 			if (userName != null) {
-
-				Query iuQuery = JoinUtil.createJoinQuery("investigation.id", false, "investigation.id",
-						new TermQuery(new Term("user.name", userName)), getSearcher(readerMap, "InvestigationUser"),
-						ScoreMode.None);
-
-				theQuery.add(iuQuery, Occur.MUST);
+				buildUserNameQuery(readerMap, userName, theQuery, "investigation.id");
 			}
 
 			String text = query.getString("text", null);
@@ -803,10 +807,7 @@ public class Lucene {
 				}
 			}
 			search.query = maybeEmptyQuery(theQuery);
-			if (o.containsKey("fields")) {
-				List<JsonString> jsonStrings = o.getJsonArray("fields").getValuesAs(JsonString.class);
-				jsonStrings.forEach((jsonString) -> search.fields.add(jsonString.getString()));
-			}
+			search.parseFields(o);
 		}
 		return search;
 	}
@@ -842,10 +843,9 @@ public class Lucene {
 							"Lucene locked for " + entityName);
 				}
 				logger.trace("delete {} {}", entityName, icatId);
-				for (ShardBucket shardBucket: bucket.shardList) {
+				for (ShardBucket shardBucket : bucket.shardList) {
 					shardBucket.indexWriter.deleteDocuments(new Term("id", icatId));
 				}
-				// ShardBucket shardBucket = bucket.routeShard(entityName, new Long(icatId));
 			} catch (IOException e) {
 				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 			}
@@ -864,9 +864,10 @@ public class Lucene {
 	 * @param searcher IndexSearcher used to get the Document for the hit.
 	 * @param search   Search object containing the fields to return.
 	 * @throws IOException
+	 * @throws LuceneException
 	 */
-	private void encodeResult(JsonGenerator gen, ScoreDoc hit, IndexSearcher searcher, Search search)
-			throws IOException {
+	private void encodeResult(String entityName, JsonGenerator gen, ScoreDoc hit, IndexSearcher searcher, Search search)
+			throws IOException, LuceneException {
 		int luceneDocId = hit.doc;
 		Document document = searcher.doc(luceneDocId);
 		gen.writeStartObject().write("_id", luceneDocId);
@@ -875,9 +876,42 @@ public class Lucene {
 			gen.write("_score", hit.score);
 		}
 		gen.writeStartObject("_source");
-		document.forEach((field) -> {
+		document.forEach(encodeField(gen, search.fields));
+		for (String joinedEntityName : search.joinedFields.keySet()) {
+			List<IndexSearcher> searchers = getSearchers(search.searcherMap, joinedEntityName);
+			Search joinedSearch = new Search();
+			String fld;
+			String parentId;
+			if (joinedEntityName.toLowerCase().contains("investigation")) {
+				fld = "investigation.id";
+				if (entityName.toLowerCase().equals("investigation")) {
+					parentId = document.get("id");
+				} else {
+					parentId = document.get("investigation.id");
+				}
+			} else {
+				fld = entityName.toLowerCase() + ".id";
+				parentId = document.get("id");
+			}
+			joinedSearch.query = new TermQuery(new Term(fld, parentId));
+			joinedSearch.sort = new Sort(new SortedNumericSortField("id.long", Type.LONG));
+			TopFieldDocs topFieldDocs = searchShards(joinedSearch, 100, searchers, null);
+			gen.writeStartArray(joinedEntityName.toLowerCase());
+			for (ScoreDoc joinedHit : topFieldDocs.scoreDocs) {
+				gen.writeStartObject();
+				Document joinedDocument = searchers.get(joinedHit.shardIndex).doc(joinedHit.doc);
+				joinedDocument.forEach(encodeField(gen, search.joinedFields.get(joinedEntityName)));
+				gen.writeEnd();
+			}
+			gen.writeEnd();
+		}
+		gen.writeEnd().writeEnd(); // source object, result object
+	}
+
+	private Consumer<? super IndexableField> encodeField(JsonGenerator gen, Set<String> fields) {
+		return (field) -> {
 			String fieldName = field.name();
-			if (search.fields.contains(fieldName)) {
+			if (fields.contains(fieldName)) {
 				if (longFields.contains(fieldName)) {
 					gen.write(fieldName, field.numericValue().longValue());
 				} else if (doubleFields.contains(fieldName)) {
@@ -886,8 +920,7 @@ public class Lucene {
 					gen.write(fieldName, field.stringValue());
 				}
 			}
-		});
-		gen.writeEnd().writeEnd(); // source object, result object
+		};
 	}
 
 	@PreDestroy
@@ -1003,11 +1036,7 @@ public class Lucene {
 			}
 			search.query = maybeEmptyQuery(luceneQuery);
 			logger.info("Query: {}", search.query);
-			if (o.containsKey("fields")) {
-				List<JsonString> jsonStrings = o.getJsonArray("fields").getValuesAs(JsonString.class);
-				jsonStrings.forEach((jsonString) -> search.fields.add(jsonString.getString()));
-				logger.info("Fields: {}", search.fields);
-			}
+			search.parseFields(o);
 			if (o.containsKey("dimensions")) {
 				List<JsonObject> dimensionObjects = o.getJsonArray("dimensions").getValuesAs(JsonObject.class);
 				for (JsonObject dimensionObject : dimensionObjects) {
@@ -1067,7 +1096,8 @@ public class Lucene {
 		return search;
 	}
 
-	private List<IndexSearcher> getSearchers(Map<String, List<IndexSearcher>> readerMap, String name) throws IOException {
+	private List<IndexSearcher> getSearchers(Map<String, List<IndexSearcher>> readerMap, String name)
+			throws IOException {
 		List<IndexSearcher> subSearchers = readerMap.get(name);
 		if (subSearchers == null) {
 			subSearchers = indexBuckets.computeIfAbsent(name, k -> new IndexBucket(k)).acquireSearchers();
@@ -1077,11 +1107,13 @@ public class Lucene {
 		return subSearchers;
 	}
 
-	private IndexSearcher getSearcher(Map<String, List<IndexSearcher>> readerMap, String name) throws IOException, LuceneException {
+	private IndexSearcher getSearcher(Map<String, List<IndexSearcher>> readerMap, String name)
+			throws IOException, LuceneException {
 		List<IndexSearcher> subSearchers = readerMap.get(name);
 		subSearchers = getSearchers(readerMap, name);
 		if (subSearchers.size() > 1) {
-			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Cannot get single IndexSearcher for " + name + " as it has " + subSearchers.size() + " shards");
+			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR,
+					"Cannot get single IndexSearcher for " + name + " as it has " + subSearchers.size() + " shards");
 		}
 		return subSearchers.get(0);
 	}
@@ -1100,7 +1132,8 @@ public class Lucene {
 
 			luceneCommitMillis = props.getPositiveInt("commitSeconds") * 1000;
 			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), new Long(Integer.MAX_VALUE + 1));
-			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds") : 5;
+			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds")
+					: 5;
 
 			timer = new Timer("LuceneCommitTimer");
 			timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
@@ -1115,7 +1148,8 @@ public class Lucene {
 			throw new IllegalStateException(e.getMessage());
 		}
 
-		logger.info("Initialised icat.lucene with directory {}, commitSeconds {}, maxShardSize {}, shardedIndices {}, maxSearchTimeSeconds {}",
+		logger.info(
+				"Initialised icat.lucene with directory {}, commitSeconds {}, maxShardSize {}, shardedIndices {}, maxSearchTimeSeconds {}",
 				luceneDirectory, luceneCommitMillis, luceneMaxShardSize, shardedIndices, maxSearchTimeSeconds);
 	}
 
@@ -1163,10 +1197,7 @@ public class Lucene {
 			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
 			if (userName != null) {
-				Query iuQuery = JoinUtil.createJoinQuery("investigation.id", false, "id",
-						new TermQuery(new Term("user.name", userName)), getSearcher(readerMap, "InvestigationUser"),
-						ScoreMode.None);
-				theQuery.add(iuQuery, Occur.MUST);
+				buildUserNameQuery(readerMap, userName, theQuery, "id");
 			}
 
 			String text = query.getString("text", null);
@@ -1213,10 +1244,7 @@ public class Lucene {
 			}
 
 			search.query = maybeEmptyQuery(theQuery);
-			if (o.containsKey("fields")) {
-				List<JsonString> jsonStrings = o.getJsonArray("fields").getValuesAs(JsonString.class);
-				jsonStrings.forEach((jsonString) -> search.fields.add(jsonString.getString()));
-			}
+			search.parseFields(o);
 		}
 		logger.info("Query: {}", search.query);
 		return search;
@@ -1273,13 +1301,15 @@ public class Lucene {
 					}
 				}
 				try {
-					DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(indexSearcher.getIndexReader());
+					DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(
+							indexSearcher.getIndexReader());
 					Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
 					logger.debug("facets: {}, maxLabels: {}, maxResults: {}", facets, maxLabels, maxResults);
 					putFacets(maxLabels, results, facets);
 				} catch (IllegalArgumentException e) {
 					// This can occur if no fields in the index have been faceted
-					logger.error("No facets found in index, resulting in error: " + e.getClass() + " " + e.getMessage());
+					logger.error(
+							"No facets found in index, resulting in error: " + e.getClass() + " " + e.getMessage());
 				} catch (IllegalStateException e) {
 					// This can occur if we do not create the IndexSearcher from the same
 					// DirectoryReader as we used to create the state
@@ -1343,29 +1373,7 @@ public class Lucene {
 		String format = "Search {} with: query {}, maxResults {}, searchAfter {}, scored {}";
 		logger.debug(format, name, search.query, maxResults, searchAfter, search.scored);
 		FieldDoc searchAfterDoc = parseSearchAfter(searchAfter, search.sort.getSort());
-		TopFieldDocs topFieldDocs;
-		if (searchers.size() > 0) {
-			List<TopFieldDocs> shardHits = new ArrayList<>();
-			int i = 0;
-			long startTime = System.currentTimeMillis();
-			for (IndexSearcher indexSearcher : searchers) {
-				// checkMaxMatches(name, search, indexSearcher);
-				TopFieldDocs shardDocs = indexSearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, search.scored);
-				shardHits.add(shardDocs);
-				logger.debug("{} hits on shard {} out of {} total docs", shardDocs.totalHits, i, indexSearcher.getIndexReader().numDocs());
-				i++;
-				long duration = (System.currentTimeMillis() - startTime);
-				if (duration > maxSearchTimeSeconds * 1000) {
-					logger.info("Stopping search after {} shards due to {} ms having elapsed", i, duration);
-					break;
-				} 
-			}
-			topFieldDocs = TopFieldDocs.merge(search.sort, 0, maxResults, shardHits.toArray(new TopFieldDocs[i]), true);
-		} else {
-			IndexSearcher indexSearcher = searchers.get(0);
-			// checkMaxMatches(name, search, indexSearcher);
-			topFieldDocs = indexSearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort, search.scored);
-		}
+		TopFieldDocs topFieldDocs = searchShards(search, maxResults, searchers, searchAfterDoc);
 		ScoreDoc[] hits = topFieldDocs.scoreDocs;
 		TotalHits totalHits = topFieldDocs.totalHits;
 		SortField[] fields = topFieldDocs.fields;
@@ -1378,7 +1386,7 @@ public class Lucene {
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject().writeStartArray("results");
 			for (ScoreDoc hit : hits) {
-				encodeResult(gen, hit, searchers.get(hit.shardIndex), search);
+				encodeResult(name, gen, hit, searchers.get(hit.shardIndex), search);
 			}
 			gen.writeEnd(); // array results
 			if (hits.length == maxResults) {
@@ -1431,12 +1439,34 @@ public class Lucene {
 		return baos.toString();
 	}
 
-	// private void checkMaxMatches(String name, Search search, IndexSearcher indexSearcher)
-	// 		throws IOException, LuceneException {
-	// 	if (shardedIndices.contains(name.toLowerCase()) && indexSearcher.count(search.query) > luceneMaxMatchingDocuments) {
-	// 		throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Query exceeded the maximum number of matching documents " + luceneMaxMatchingDocuments);
-	// 	}
-	// }
+	private TopFieldDocs searchShards(Search search, int maxResults, List<IndexSearcher> searchers,
+			FieldDoc searchAfterDoc) throws IOException {
+		TopFieldDocs topFieldDocs;
+		if (searchers.size() > 0) {
+			List<TopFieldDocs> shardHits = new ArrayList<>();
+			int i = 0;
+			long startTime = System.currentTimeMillis();
+			for (IndexSearcher indexSearcher : searchers) {
+				TopFieldDocs shardDocs = indexSearcher.searchAfter(searchAfterDoc, search.query, maxResults,
+						search.sort, search.scored);
+				shardHits.add(shardDocs);
+				logger.debug("{} hits on shard {} out of {} total docs", shardDocs.totalHits, i,
+						indexSearcher.getIndexReader().numDocs());
+				i++;
+				long duration = (System.currentTimeMillis() - startTime);
+				if (duration > maxSearchTimeSeconds * 1000) {
+					logger.info("Stopping search after {} shards due to {} ms having elapsed", i, duration);
+					break;
+				}
+			}
+			topFieldDocs = TopFieldDocs.merge(search.sort, 0, maxResults, shardHits.toArray(new TopFieldDocs[i]), true);
+		} else {
+			IndexSearcher indexSearcher = searchers.get(0);
+			topFieldDocs = indexSearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort,
+					search.scored);
+		}
+		return topFieldDocs;
+	}
 
 	private Query maybeEmptyQuery(Builder theQuery) {
 		Query query = theQuery.build();
@@ -1504,7 +1534,7 @@ public class Lucene {
 
 		// Likewise, faceted fields should be considered separately
 		if (facetFields.contains(key)) {
-			document.add(new SortedSetDocValuesFacetField(key, json.getString(key)));
+			document.add(new SortedSetDocValuesFacetField(key + ".keyword", json.getString(key)));
 		}
 
 		if (doubleFields.contains(key)) {
@@ -1558,7 +1588,7 @@ public class Lucene {
 				document.add(new NumericDocValuesField("id.long", value));
 				document.add(new StoredField("id.long", value));
 			}
-			// TODO add special case for startDate -> date to make sorting easier
+			// TODO add special case for startDate -> date to make sorting easier?
 			if (longFields.contains(key)) {
 				document.add(new NumericDocValuesField(key, json.getJsonNumber(key).longValueExact()));
 			} else if (doubleFields.contains(key)) {
@@ -1759,7 +1789,6 @@ public class Lucene {
 						"Lucene locked for " + entityName);
 			}
 			logger.trace("update: {}", document);
-			// bucket.getWriter(entityName, new Long(icatId)).updateDocument(new Term("id", icatId), facetsConfig.build(document));
 			bucket.updateDocument(new Term("id", icatId), facetsConfig.build(document));
 		}
 	}
@@ -1787,8 +1816,6 @@ public class Lucene {
 					Document newDocument = delete ? pruneDocument(parentRelationship.fieldPrefix, oldDocument)
 							: updateDocument(operationBody.getJsonObject("doc"), oldDocument);
 					logger.trace("updateByRelation: {}", newDocument);
-					// bucket.getWriter(parentRelationship.parentName, new Long(parentId)).updateDocument(new Term("id", parentId),
-					// 		facetsConfig.build(newDocument));
 					bucket.updateDocument(new Term("id", parentId), facetsConfig.build(newDocument));
 				}
 				scoreDocs = searcher.searchAfter(scoreDocs[scoreDocs.length - 1], query, blockSize, sort).scoreDocs;
