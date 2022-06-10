@@ -65,7 +65,6 @@ import org.apache.lucene.facet.FacetResult;
 import org.apache.lucene.facet.Facets;
 import org.apache.lucene.facet.FacetsCollector;
 import org.apache.lucene.facet.FacetsConfig;
-import org.apache.lucene.facet.LabelAndValue;
 import org.apache.lucene.facet.range.DoubleRange;
 import org.apache.lucene.facet.range.DoubleRangeFacetCounts;
 import org.apache.lucene.facet.range.LongRange;
@@ -314,7 +313,7 @@ public class Lucene {
 		public boolean scored;
 		public Set<String> fields = new HashSet<String>();
 		public Map<String, Set<String>> joinedFields = new HashMap<>();
-		public Set<FacetDimensionRequest> dimensions = new HashSet<FacetDimensionRequest>();
+		public Map<String, FacetedDimension> dimensions = new HashMap<String, FacetedDimension>();
 
 		public void parseFields(JsonObject jsonObject) throws LuceneException {
 			if (jsonObject.containsKey("fields")) {
@@ -426,7 +425,7 @@ public class Lucene {
 		sortFields.addAll(Arrays.asList("datafile.id", "dataset.id", "investigation.id", "instrument.id", "id", "date",
 				"startDate", "endDate", "name", "stringValue", "dateTimeValue", "numericValue", "numericValueSI"));
 		textFields.addAll(Arrays.asList("name", "visitId", "description", "location", "dataset.name",
-				"investigation.name", "instrument.name", "isntrument.fullName", "datafileFormat.name", "sample.name",
+				"investigation.name", "instrument.name", "instrument.fullName", "datafileFormat.name", "sample.name",
 				"sample.type.name", "title", "summary", "facility.name", "user.fullName", "type.name"));
 
 		indexedEntities.addAll(Arrays.asList("Datafile", "Dataset", "Investigation", "DatafileParameter",
@@ -869,8 +868,9 @@ public class Lucene {
 	private void encodeResult(String entityName, JsonGenerator gen, ScoreDoc hit, IndexSearcher searcher, Search search)
 			throws IOException, LuceneException {
 		int luceneDocId = hit.doc;
+		int shardIndex = hit.shardIndex;
 		Document document = searcher.doc(luceneDocId);
-		gen.writeStartObject().write("_id", luceneDocId);
+		gen.writeStartObject().write("_id", luceneDocId).write("_shardIndex", shardIndex);
 		Float score = hit.score;
 		if (!score.equals(Float.NaN)) {
 			gen.write("_score", hit.score);
@@ -1045,7 +1045,7 @@ public class Lucene {
 								"'dimension' not specified for facet request " + dimensionObject.toString());
 					}
 					String dimension = dimensionObject.getString("dimension");
-					FacetDimensionRequest facetDimensionRequest = new FacetDimensionRequest(dimension);
+					FacetedDimension facetDimensionRequest = new FacetedDimension(dimension);
 					if (dimensionObject.containsKey("ranges")) {
 						List<Range> ranges = facetDimensionRequest.getRanges();
 						if (longFields.contains(dimension)) {
@@ -1088,7 +1088,7 @@ public class Lucene {
 											+ " but this is not a supported numeric field");
 						}
 					}
-					search.dimensions.add(facetDimensionRequest);
+					search.dimensions.put(dimension, facetDimensionRequest);
 				}
 				logger.info("Dimensions: {}", search.dimensions.size());
 			}
@@ -1270,42 +1270,67 @@ public class Lucene {
 
 	private String luceneFacetResult(String name, Search search, String searchAfter, int maxResults, int maxLabels,
 			Long uid) throws IOException, IllegalStateException, LuceneException {
-		Map<String, Map<String, Long>> results = new HashMap<>();
-		Map<String, Map<String, Long>> rangeResults = new HashMap<>();
+		// If no dimensions were specified, perform "sparse" faceting on all applicable
+		// string values
+		boolean sparse = search.dimensions.size() == 0;
+		// By default, assume we do not need to perform string based faceting for
+		// specific dimensions
+		boolean facetStrings = false;
 		if (maxResults <= 0 || maxLabels <= 0) {
 			// This will result in no Facets and a null pointer, so return early
 			logger.warn("Cannot facet when maxResults={}, maxLabels={}, returning empty list", maxResults, maxLabels);
 		} else {
+			// Iterate over shards and aggregate the facets from each
 			List<IndexSearcher> searchers = getSearchers(search.searcherMap, name);
+			logger.debug("Faceting {} with {} after {} ", name, search.query, searchAfter);
 			for (IndexSearcher indexSearcher : searchers) {
 				FacetsCollector facetsCollector = new FacetsCollector();
 				FacetsCollector.search(indexSearcher, search.query, maxResults, facetsCollector);
-				logger.debug("To facet in {} for {} {} with {} from {} ", name, search.query, maxResults, indexSearcher,
-						searchAfter);
-				for (FacetDimensionRequest facetDimensionRequest : search.dimensions) {
-					if (facetDimensionRequest.getRanges().size() > 0) {
-						String dimension = facetDimensionRequest.getDimension();
+				for (FacetedDimension facetedDimension : search.dimensions.values()) {
+					if (facetedDimension.getRanges().size() > 0) {
+						// Perform range based facets for a numeric field
+						String dimension = facetedDimension.getDimension();
+						Facets facets;
 						if (longFields.contains(dimension)) {
-							LongRange[] ranges = facetDimensionRequest.getRanges().toArray(new LongRange[0]);
-							Facets facets = new LongRangeFacetCounts(dimension, facetsCollector, ranges);
-							putFacets(maxLabels, rangeResults, facets);
+							LongRange[] ranges = facetedDimension.getRanges().toArray(new LongRange[0]);
+							facets = new LongRangeFacetCounts(dimension, facetsCollector, ranges);
 						} else if (doubleFields.contains(dimension)) {
-							DoubleRange[] ranges = facetDimensionRequest.getRanges().toArray(new DoubleRange[0]);
-							Facets facets = new DoubleRangeFacetCounts(dimension, facetsCollector, ranges);
-							putFacets(maxLabels, rangeResults, facets);
+							DoubleRange[] ranges = facetedDimension.getRanges().toArray(new DoubleRange[0]);
+							facets = new DoubleRangeFacetCounts(dimension, facetsCollector, ranges);
 						} else {
 							throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
 									"'ranges' specified for dimension " + dimension
 											+ " but this is not a supported numeric field");
 						}
+						FacetResult facetResult = facets.getTopChildren(maxLabels, dimension);
+						facetedDimension.addResult(facetResult);
+					} else {
+						// Have a specific string dimension to facet, but these should all be done at
+						// once for efficiency
+						facetStrings = true;
 					}
 				}
 				try {
-					DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(
-							indexSearcher.getIndexReader());
-					Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
-					logger.debug("facets: {}, maxLabels: {}, maxResults: {}", facets, maxLabels, maxResults);
-					putFacets(maxLabels, results, facets);
+					if (sparse) {
+						// Facet all applicable string fields
+						DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(
+								indexSearcher.getIndexReader());
+						Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
+						addFacetResults(maxLabels, search.dimensions, facets);
+					} else if (facetStrings) {
+						// Only add facets to the results if they match one of the requested dimensions
+						DefaultSortedSetDocValuesReaderState state = new DefaultSortedSetDocValuesReaderState(
+								indexSearcher.getIndexReader());
+						Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
+						List<FacetResult> facetResults = facets.getAllDims(maxLabels);
+						for (FacetResult facetResult : facetResults) {
+							String dimension = facetResult.dim;
+							FacetedDimension facetedDimension = search.dimensions.get(dimension);
+							if (facetedDimension != null) {
+								facetedDimension.addResult(facetResult);
+							}
+						}
+					}
 				} catch (IllegalArgumentException e) {
 					// This can occur if no fields in the index have been faceted
 					logger.error(
@@ -1318,53 +1343,36 @@ public class Lucene {
 					throw e;
 				}
 			}
-			logger.debug("Facets found for " + results.size() + " dimensions");
 		}
-		Set<String> dimensionSet = new HashSet<>();
-		search.dimensions.forEach(d -> dimensionSet.add(d.getDimension()));
+		// Build results
 		JsonObjectBuilder aggregationsBuilder = Json.createObjectBuilder();
-		for (Entry<String, Map<String, Long>> dimensionEntry : results.entrySet()) {
-			if (dimensionSet.size() == 0 || dimensionSet.contains(dimensionEntry.getKey())) {
-				buildBuckets(aggregationsBuilder, dimensionEntry);
-			}
-		}
-		for (Entry<String, Map<String, Long>> dimensionEntry : results.entrySet()) {
-			buildBuckets(aggregationsBuilder, dimensionEntry);
-		}
+		search.dimensions.values().forEach(facetedDimension -> facetedDimension.buildResponse(aggregationsBuilder));
 		return Json.createObjectBuilder().add("aggregations", aggregationsBuilder).build().toString();
 	}
 
-	private void putFacets(int maxLabels, Map<String, Map<String, Long>> rangeResults, Facets facets)
+	/**
+	 * Add Facets for all dimensions. This will create FacetDimension Objects if the
+	 * do not already exist in the facetedDimensionMap, otherwise the counts for
+	 * each label will be aggregated.
+	 * 
+	 * @param maxLabels           The maximum number of labels for a given
+	 *                            dimension. This labels with the highest counts are
+	 *                            returned first.
+	 * @param facetedDimensionMap Map containing the dimensions that have been or
+	 *                            should be faceted.
+	 * @param facets              Lucene facets object containing all dimensions.
+	 * @throws IOException
+	 */
+	private void addFacetResults(int maxLabels, Map<String, FacetedDimension> facetedDimensionMap, Facets facets)
 			throws IOException {
-		for (FacetResult result : facets.getAllDims(maxLabels)) {
-			String dim = result.dim;
-			if (rangeResults.containsKey(dim)) {
-				Map<String, Long> labelMap = rangeResults.get(dim);
-				for (LabelAndValue labelAndValue : result.labelValues) {
-					String label = labelAndValue.label;
-					if (labelMap.containsKey(label)) {
-						labelMap.put(label, labelMap.get(label) + labelAndValue.value.longValue());
-					} else {
-						labelMap.put(label, labelAndValue.value.longValue());
-					}
-				}
-			} else {
-				Map<String, Long> labelMap = new HashMap<>();
-				for (LabelAndValue labelAndValue : result.labelValues) {
-					labelMap.put(labelAndValue.label, labelAndValue.value.longValue());
-				}
-				rangeResults.put(dim, labelMap);
+		for (FacetResult facetResult : facets.getAllDims(maxLabels)) {
+			String dim = facetResult.dim;
+			FacetedDimension facetedDimension = facetedDimensionMap.get(dim);
+			if (facetedDimension == null) {
+				facetedDimension = new FacetedDimension(facetResult.dim);
 			}
+			facetedDimension.addResult(facetResult);
 		}
-	}
-
-	private void buildBuckets(JsonObjectBuilder aggregationsBuilder, Entry<String, Map<String, Long>> result) {
-		JsonObjectBuilder bucketsBuilder = Json.createObjectBuilder();
-		for (Entry<String, Long> labelValue : result.getValue().entrySet()) {
-			JsonObjectBuilder bucketBuilder = Json.createObjectBuilder();
-			bucketsBuilder.add(labelValue.getKey(), bucketBuilder.add("doc_count", labelValue.getValue()));
-		}
-		aggregationsBuilder.add(result.getKey(), Json.createObjectBuilder().add("buckets", bucketsBuilder));
 	}
 
 	private String luceneSearchResult(String name, Search search, String searchAfter, int maxResults, Long uid)
@@ -1535,6 +1543,7 @@ public class Lucene {
 		// Likewise, faceted fields should be considered separately
 		if (facetFields.contains(key)) {
 			document.add(new SortedSetDocValuesFacetField(key + ".keyword", json.getString(key)));
+			document.add(new StringField(key + ".keyword", json.getString(key), Store.NO));
 		}
 
 		if (doubleFields.contains(key)) {
@@ -1670,7 +1679,7 @@ public class Lucene {
 		BooleanQuery.Builder paramQuery = new BooleanQuery.Builder();
 		String pName = parameter.getString("name", null);
 		if (pName != null) {
-			paramQuery.add(new WildcardQuery(new Term("type.name", pName)), Occur.MUST);
+			paramQuery.add(new WildcardQuery(new Term("type.name.keyword", pName)), Occur.MUST);
 		}
 
 		String pUnits = parameter.getString("units", null);
@@ -1710,7 +1719,10 @@ public class Lucene {
 		logger.debug("Attempting to parseSearchAfter from {}", searchAfter);
 		JsonReader reader = Json.createReader(new StringReader(searchAfter));
 		JsonObject object = reader.readObject();
+		// shardIndex and Lucene doc Id are always needed to determine tie breaks, even
+		// if the field sort resulted in no ties in the first place
 		int shardIndex = object.getInt("shardIndex");
+		int doc = object.getInt("doc");
 		float score = Float.NaN;
 		List<Object> fields = new ArrayList<>();
 		if (object.containsKey("score")) {
@@ -1756,7 +1768,7 @@ public class Lucene {
 				}
 			}
 		}
-		return new FieldDoc(0, score, fields.toArray(), shardIndex); // TODO
+		return new FieldDoc(doc, score, fields.toArray(), shardIndex);
 	}
 
 	@POST
