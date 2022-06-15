@@ -1398,7 +1398,7 @@ public class Lucene {
 		if (hits.length > 0) {
 			maxScore = hits[0].score;
 		}
-		logger.debug("Hits " + totalHits + " maxscore " + maxScore);
+		logger.debug("{} maxscore {}", totalHits, maxScore);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject().writeStartArray("results");
@@ -1477,7 +1477,7 @@ public class Lucene {
 				TopFieldDocs shardDocs = indexSearcher.searchAfter(searchAfterDoc, search.query, maxResults,
 						search.sort, search.scored);
 				shardHits.add(shardDocs);
-				logger.debug("{} hits on shard {} out of {} total docs", shardDocs.totalHits, i, docCount);
+				logger.debug("{} on shard {} out of {} total docs", shardDocs.totalHits, i, docCount);
 				i++;
 				long duration = (System.currentTimeMillis() - startTime);
 				if (duration > maxSearchTimeSeconds * 1000) {
