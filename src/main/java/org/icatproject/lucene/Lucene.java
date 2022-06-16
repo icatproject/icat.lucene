@@ -314,6 +314,7 @@ public class Lucene {
 		public Set<String> fields = new HashSet<String>();
 		public Map<String, Set<String>> joinedFields = new HashMap<>();
 		public Map<String, FacetedDimension> dimensions = new HashMap<String, FacetedDimension>();
+		public boolean aborted = false;
 
 		public void parseFields(JsonObject jsonObject) throws LuceneException {
 			if (jsonObject.containsKey("fields")) {
@@ -723,6 +724,13 @@ public class Lucene {
 
 			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
+			if (query.containsKey("filter")) {
+				JsonObject filterObject = query.getJsonObject("filter");
+				for (String fld : filterObject.keySet()) {
+					theQuery.add(new TermQuery(new Term(fld, filterObject.getString(fld))), Occur.FILTER);
+				}
+			}
+
 			if (userName != null) {
 				buildUserNameQuery(readerMap, userName, theQuery, "investigation.id");
 			}
@@ -783,6 +791,13 @@ public class Lucene {
 			String userName = query.getString("user", null);
 
 			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
+
+			if (query.containsKey("filter")) {
+				JsonObject filterObject = query.getJsonObject("filter");
+				for (String fld : filterObject.keySet()) {
+					theQuery.add(new TermQuery(new Term(fld, filterObject.getString(fld))), Occur.FILTER);
+				}
+			}
 
 			if (userName != null) {
 				buildUserNameQuery(readerMap, userName, theQuery, "investigation.id");
@@ -1201,6 +1216,13 @@ public class Lucene {
 
 			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
+			if (query.containsKey("filter")) {
+				JsonObject filterObject = query.getJsonObject("filter");
+				for (String fld : filterObject.keySet()) {
+					theQuery.add(new TermQuery(new Term(fld, filterObject.getString(fld))), Occur.FILTER);
+				}
+			}
+
 			if (userName != null) {
 				buildUserNameQuery(readerMap, userName, theQuery, "id");
 			}
@@ -1401,54 +1423,58 @@ public class Lucene {
 		logger.debug("{} maxscore {}", totalHits, maxScore);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
-			gen.writeStartObject().writeStartArray("results");
-			for (ScoreDoc hit : hits) {
-				encodeResult(name, gen, hit, searchers.get(hit.shardIndex), search);
-			}
-			gen.writeEnd(); // array results
-			if (hits.length == maxResults) {
-				ScoreDoc lastDoc = hits[hits.length - 1];
-				gen.writeStartObject("search_after").write("doc", lastDoc.doc).write("shardIndex", lastDoc.shardIndex);
-				float lastScore = lastDoc.score;
-				if (!Float.isNaN(lastScore)) {
-					gen.write("score", lastScore);
+			gen.writeStartObject();
+			gen.write("aborted", search.aborted);
+			if (!search.aborted) {
+				gen.writeStartArray("results");
+				for (ScoreDoc hit : hits) {
+					encodeResult(name, gen, hit, searchers.get(hit.shardIndex), search);
 				}
-				if (fields != null) {
-					Document lastDocument = searchers.get(lastDoc.shardIndex).doc(lastDoc.doc);
-					gen.writeStartArray("fields");
-					for (SortField sortField : fields) {
-						String fieldName = sortField.getField();
-						if (fieldName == null) {
-							// SCORE sorting will have a null fieldName
-							gen.write(lastDoc.score);
-							continue;
-						}
-						IndexableField indexableField = lastDocument.getField(fieldName);
-						if (indexableField == null) {
-							throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Field " + fieldName
-									+ " used for sorting was not present on the Lucene Document; all sortable fields must also be stored.");
-						}
-						Type type = (sortField instanceof SortedNumericSortField)
-								? ((SortedNumericSortField) sortField).getNumericType()
-								: sortField.getType();
-						switch (type) {
-							case LONG:
-								gen.write(indexableField.numericValue().longValue());
-								break;
-							case DOUBLE:
-								gen.write(indexableField.numericValue().doubleValue());
-								break;
-							case STRING:
-								gen.write(indexableField.stringValue());
-								break;
-							default:
-								throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR,
-										"SortField.Type must be one of LONG, DOUBLE, STRING, but it was " + type);
-						}
+				gen.writeEnd(); // array results
+				if (hits.length == maxResults) {
+					ScoreDoc lastDoc = hits[hits.length - 1];
+					gen.writeStartObject("search_after").write("doc", lastDoc.doc).write("shardIndex", lastDoc.shardIndex);
+					float lastScore = lastDoc.score;
+					if (!Float.isNaN(lastScore)) {
+						gen.write("score", lastScore);
 					}
-					gen.writeEnd(); // end "fields" array
+					if (fields != null) {
+						Document lastDocument = searchers.get(lastDoc.shardIndex).doc(lastDoc.doc);
+						gen.writeStartArray("fields");
+						for (SortField sortField : fields) {
+							String fieldName = sortField.getField();
+							if (fieldName == null) {
+								// SCORE sorting will have a null fieldName
+								gen.write(lastDoc.score);
+								continue;
+							}
+							IndexableField indexableField = lastDocument.getField(fieldName);
+							if (indexableField == null) {
+								throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Field " + fieldName
+										+ " used for sorting was not present on the Lucene Document; all sortable fields must also be stored.");
+							}
+							Type type = (sortField instanceof SortedNumericSortField)
+									? ((SortedNumericSortField) sortField).getNumericType()
+									: sortField.getType();
+							switch (type) {
+								case LONG:
+									gen.write(indexableField.numericValue().longValue());
+									break;
+								case DOUBLE:
+									gen.write(indexableField.numericValue().doubleValue());
+									break;
+								case STRING:
+									gen.write(indexableField.stringValue());
+									break;
+								default:
+									throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR,
+											"SortField.Type must be one of LONG, DOUBLE, STRING, but it was " + type);
+							}
+						}
+						gen.writeEnd(); // end "fields" array
+					}
+					gen.writeEnd(); // end "search_after" object
 				}
-				gen.writeEnd(); // end "search_after" object
 			}
 			gen.writeEnd(); // end enclosing object
 		}
@@ -1482,6 +1508,7 @@ public class Lucene {
 				long duration = (System.currentTimeMillis() - startTime);
 				if (duration > maxSearchTimeSeconds * 1000) {
 					logger.info("Stopping search after {} shards due to {} ms having elapsed", i, duration);
+					search.aborted = true;
 					break;
 				}
 			}
