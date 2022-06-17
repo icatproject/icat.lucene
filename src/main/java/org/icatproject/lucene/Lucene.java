@@ -603,6 +603,43 @@ public class Lucene {
 		}
 	}
 
+	/**
+	 * Builds Term queries (exact string matches without tokenizing) from the filter
+	 * object in the query request. This is intended to be used with the faceting,
+	 * with the fields having the ".keyword" suffix.
+	 * 
+	 * @param requestedQuery Json object containing details of the query.
+	 * @param queryBuilder   Builder for the overall boolean query to be build.
+	 * @throws LuceneException If the values in the filter object are neither STRING
+	 *                         nor ARRAY of STRING.
+	 */
+	private void buildFilterQueries(JsonObject requestedQuery, BooleanQuery.Builder queryBuilder)
+			throws LuceneException {
+		if (requestedQuery.containsKey("filter")) {
+			JsonObject filterObject = requestedQuery.getJsonObject("filter");
+			for (String fld : filterObject.keySet()) {
+				ValueType valueType = filterObject.get(fld).getValueType();
+				switch (valueType) {
+					case ARRAY:
+						BooleanQuery.Builder dimensionQuery = new BooleanQuery.Builder();
+						for (JsonString value : filterObject.getJsonArray(fld).getValuesAs(JsonString.class)) {
+							dimensionQuery.add(new TermQuery(new Term(fld, value.getString())), Occur.SHOULD);
+						}
+						queryBuilder.add(dimensionQuery.build(), Occur.FILTER);
+						break;
+
+					case STRING:
+						queryBuilder.add(new TermQuery(new Term(fld, filterObject.getString(fld))), Occur.FILTER);
+						break;
+
+					default:
+						throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
+								"filter object values should be STRING or ARRAY, but were " + valueType);
+				}
+			}
+		}
+	}
+
 	private void buildUserNameQuery(Map<String, List<IndexSearcher>> readerMap, String userName,
 			BooleanQuery.Builder theQuery, String toField)
 			throws IOException, LuceneException {
@@ -724,12 +761,7 @@ public class Lucene {
 
 			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
-			if (query.containsKey("filter")) {
-				JsonObject filterObject = query.getJsonObject("filter");
-				for (String fld : filterObject.keySet()) {
-					theQuery.add(new TermQuery(new Term(fld, filterObject.getString(fld))), Occur.FILTER);
-				}
-			}
+			buildFilterQueries(query, theQuery);
 
 			if (userName != null) {
 				buildUserNameQuery(readerMap, userName, theQuery, "investigation.id");
@@ -792,12 +824,7 @@ public class Lucene {
 
 			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
-			if (query.containsKey("filter")) {
-				JsonObject filterObject = query.getJsonObject("filter");
-				for (String fld : filterObject.keySet()) {
-					theQuery.add(new TermQuery(new Term(fld, filterObject.getString(fld))), Occur.FILTER);
-				}
-			}
+			buildFilterQueries(query, theQuery);
 
 			if (userName != null) {
 				buildUserNameQuery(readerMap, userName, theQuery, "investigation.id");
@@ -1216,12 +1243,7 @@ public class Lucene {
 
 			BooleanQuery.Builder theQuery = new BooleanQuery.Builder();
 
-			if (query.containsKey("filter")) {
-				JsonObject filterObject = query.getJsonObject("filter");
-				for (String fld : filterObject.keySet()) {
-					theQuery.add(new TermQuery(new Term(fld, filterObject.getString(fld))), Occur.FILTER);
-				}
-			}
+			buildFilterQueries(query, theQuery);
 
 			if (userName != null) {
 				buildUserNameQuery(readerMap, userName, theQuery, "id");
@@ -1409,8 +1431,8 @@ public class Lucene {
 			throws IOException, LuceneException {
 		List<IndexSearcher> searchers = getSearchers(search.searcherMap, name);
 		List<ShardBucket> shards = getShards(search.searcherMap, name);
-		String format = "Search {} with: query {}, maxResults {}, searchAfter {}, scored {}";
-		logger.debug(format, name, search.query, maxResults, searchAfter, search.scored);
+		String format = "Search {} with: query {}, maxResults {}, searchAfter {}, scored {}, fields {}";
+		logger.debug(format, name, search.query, maxResults, searchAfter, search.scored, search.fields);
 		FieldDoc searchAfterDoc = parseSearchAfter(searchAfter, search.sort.getSort());
 		TopFieldDocs topFieldDocs = searchShards(search, maxResults, shards, searchAfterDoc);
 		ScoreDoc[] hits = topFieldDocs.scoreDocs;
@@ -1433,7 +1455,8 @@ public class Lucene {
 				gen.writeEnd(); // array results
 				if (hits.length == maxResults) {
 					ScoreDoc lastDoc = hits[hits.length - 1];
-					gen.writeStartObject("search_after").write("doc", lastDoc.doc).write("shardIndex", lastDoc.shardIndex);
+					gen.writeStartObject("search_after").write("doc", lastDoc.doc).write("shardIndex",
+							lastDoc.shardIndex);
 					float lastScore = lastDoc.score;
 					if (!Float.isNaN(lastScore)) {
 						gen.write("score", lastScore);
@@ -1478,7 +1501,7 @@ public class Lucene {
 			}
 			gen.writeEnd(); // end enclosing object
 		}
-		logger.trace("Json returned {}", baos.toString());
+		logger.debug("Json returned {}", baos.toString());
 		return baos.toString();
 	}
 
