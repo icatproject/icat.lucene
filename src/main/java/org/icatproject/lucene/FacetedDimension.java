@@ -8,8 +8,17 @@ import javax.json.JsonObjectBuilder;
 
 import org.apache.lucene.facet.FacetResult;
 import org.apache.lucene.facet.LabelAndValue;
+import org.apache.lucene.facet.range.DoubleRange;
+import org.apache.lucene.facet.range.LongRange;
 import org.apache.lucene.facet.range.Range;
 
+/**
+ * For a single dimension (field), stores labels (the unique values or ranges of
+ * values for that field in the index) and their respective counts (the number
+ * of times that label appears in different documents).
+ * 
+ * For example, a dimension might be "colour", the label "red", and the count 5.
+ */
 public class FacetedDimension {
 
 	private String dimension;
@@ -18,11 +27,8 @@ public class FacetedDimension {
 	private List<Long> counts;
 
 	/**
-	 * For a single dimension (field), stores labels (the unique values or ranges of
-	 * values for that field in the index) and their respective counts (the number
-	 * of times that label appears in different documents).
-	 * 
-	 * For example, a dimension might be "colour", the label "red", and the count 5.
+	 * Creates an "empty" FacetedDimension. The dimension (field) is set but ranges,
+	 * labels and counts are not.
 	 * 
 	 * @param dimension The dimension, or field, to be faceted
 	 */
@@ -65,7 +71,18 @@ public class FacetedDimension {
 		JsonObjectBuilder bucketsBuilder = Json.createObjectBuilder();
 		for (int i = 0; i < labels.size(); i++) {
 			JsonObjectBuilder bucketBuilder = Json.createObjectBuilder();
-			bucketsBuilder.add(labels.get(i), bucketBuilder.add("doc_count", counts.get(i)));
+			bucketBuilder.add("doc_count", counts.get(i));
+			if (ranges.size() > i) {
+				Range range = ranges.get(i);
+				if (range.getClass().getSimpleName().equals("LongRange")) {
+					bucketBuilder.add("from", ((LongRange) range).min);
+					bucketBuilder.add("to", ((LongRange) range).max);
+				} else if (range.getClass().getSimpleName().equals("DoubleRange")) {
+					bucketBuilder.add("from", ((DoubleRange) range).min);
+					bucketBuilder.add("to", ((DoubleRange) range).max);
+				}
+			}
+			bucketsBuilder.add(labels.get(i), bucketBuilder);
 		}
 		aggregationsBuilder.add(dimension, Json.createObjectBuilder().add("buckets", bucketsBuilder));
 	}
