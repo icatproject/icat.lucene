@@ -15,15 +15,18 @@ public class DocumentMapping {
 	 */
 	public static class ParentRelationship {
 		public String parentName;
-		public String fieldPrefix;
+		public String joiningField;
+		public Set<String> fields;
 
 		/**
-		 * @param parentName Name of the parent entity.
-		 * @param fieldPrefix How nested fields should be prefixed.
+		 * @param parentName  Name of the parent entity.
+		 * @param joiningField Field that joins the child to its parent.
+		 * @param fields Fields that should be updated by this relationship.
 		 */
-		public ParentRelationship(String parentName, String fieldPrefix) {
+		public ParentRelationship(String parentName, String joiningField, String... fields) {
 			this.parentName = parentName;
-			this.fieldPrefix = fieldPrefix;
+			this.joiningField = joiningField;
+			this.fields = new HashSet<>(Arrays.asList(fields));
 		}
 
 	}
@@ -43,12 +46,14 @@ public class DocumentMapping {
 	public static final StandardQueryParser investigationParser = new StandardQueryParser();
 	public static final StandardQueryParser sampleParser = new StandardQueryParser();
 
-    static {
+	static {
 		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI"));
 		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name", "stringValue"));
-		longFields.addAll(Arrays.asList("date", "startDate", "endDate", "dateTimeValue", "investigation.startDate"));
-		sortFields.addAll(Arrays.asList("datafile.id", "dataset.id", "investigation.id", "instrument.id", "id", "date",
-				"startDate", "endDate", "name", "stringValue", "dateTimeValue", "numericValue", "numericValueSI"));
+		longFields.addAll(
+				Arrays.asList("date", "startDate", "endDate", "dateTimeValue", "investigation.startDate", "fileSize"));
+		sortFields.addAll(Arrays.asList("datafile.id", "dataset.id", "investigation.id", "instrument.id", "id",
+				"sample.investigation.id", "date", "name", "stringValue", "dateTimeValue", "numericValue",
+				"numericValueSI", "fileSize"));
 		textFields.addAll(Arrays.asList("name", "visitId", "description", "location", "dataset.name",
 				"investigation.name", "instrument.name", "instrument.fullName", "datafileFormat.name", "sample.name",
 				"sample.type.name", "title", "summary", "facility.name", "user.fullName", "type.name"));
@@ -58,35 +63,51 @@ public class DocumentMapping {
 				"InvestigationUser", "Sample"));
 
 		relationships.put("Instrument",
-				new ParentRelationship[] { new ParentRelationship("InvestigationInstrument", "instrument") });
-		relationships.put("User", new ParentRelationship[] { new ParentRelationship("InvestigationUser", "user"),
-				new ParentRelationship("InstrumentScientist", "user") });
-		relationships.put("Sample", new ParentRelationship[] { new ParentRelationship("Dataset", "sample") });
-		relationships.put("SampleType", new ParentRelationship[] { new ParentRelationship("Sample", "type"),
-				new ParentRelationship("Dataset", "sample.type") });
+				new ParentRelationship[] { new ParentRelationship("InvestigationInstrument", "instrument.id",
+						"instrument.name", "instrument.fullName") });
+		relationships.put("User",
+				new ParentRelationship[] {
+						new ParentRelationship("InvestigationUser", "user.id", "user.name", "user.fullName"),
+						new ParentRelationship("InstrumentScientist", "user.id", "user.name", "user.fullName") });
+		relationships.put("Sample", new ParentRelationship[] {
+				new ParentRelationship("Dataset", "sample.id", "sample.name", "sample.investigation.id"),
+				new ParentRelationship("Datafile", "sample.id", "sample.name", "sample.investigation.id") });
+		relationships.put("SampleType",
+				new ParentRelationship[] { new ParentRelationship("Sample", "type.id", "type.name"),
+						new ParentRelationship("Dataset", "sample.type.id", "sample.type.name"),
+						new ParentRelationship("Datafile", "sample.type.id", "sample.type.name") });
 		relationships.put("InvestigationType",
-				new ParentRelationship[] { new ParentRelationship("Investigation", "type") });
-		relationships.put("DatasetType", new ParentRelationship[] { new ParentRelationship("Dataset", "type") });
+				new ParentRelationship[] { new ParentRelationship("Investigation", "type.id", "type.name") });
+		relationships.put("DatasetType",
+				new ParentRelationship[] { new ParentRelationship("Dataset", "type.id", "type.name") });
 		relationships.put("DatafileFormat",
-				new ParentRelationship[] { new ParentRelationship("Datafile", "datafileFormat") });
-		relationships.put("Facility", new ParentRelationship[] { new ParentRelationship("Investigation", "facility") });
+				new ParentRelationship[] {
+						new ParentRelationship("Datafile", "datafileFormat.id", "datafileFormat.name") });
+		relationships.put("Facility",
+				new ParentRelationship[] { new ParentRelationship("Investigation", "facility.id", "facility.name") });
 		relationships.put("ParameterType",
-				new ParentRelationship[] { new ParentRelationship("DatafileParameter", "type"),
-						new ParentRelationship("DatasetParameter", "type"),
-						new ParentRelationship("InvestigationParameter", "type") });
+				new ParentRelationship[] { new ParentRelationship("DatafileParameter", "type.id", "type.name"),
+						new ParentRelationship("DatasetParameter", "type.id", "type.name"),
+						new ParentRelationship("InvestigationParameter", "type.id", "type.name") });
 		relationships.put("Investigation",
-				new ParentRelationship[] { new ParentRelationship("Dataset", "investigation"),
-						new ParentRelationship("datafile", "investigation") });
+				new ParentRelationship[] {
+						new ParentRelationship("Dataset", "investigation.id", "investigation.name",
+								"investigation.title", "investigation.startDate", "visitId"),
+						new ParentRelationship("datafile", "investigation.id", "investigation.name", "visitId") });
+		relationships.put("Dataset",
+				new ParentRelationship[] { new ParentRelationship("Datafile", "dataset.id", "dataset.name") });
 
 		genericParser.setAllowLeadingWildcard(true);
 		genericParser.setAnalyzer(analyzer);
 
-		CharSequence[] datafileFields = { "name", "description", "location", "datafileFormat.name" };
+		CharSequence[] datafileFields = { "name", "description", "location", "datafileFormat.name", "visitId",
+				"sample.name", "sample.type.name" };
 		datafileParser.setAllowLeadingWildcard(true);
 		datafileParser.setAnalyzer(analyzer);
 		datafileParser.setMultiFields(datafileFields);
 
-		CharSequence[] datasetFields = { "name", "description", "sample.name", "sample.type.name", "type.name" };
+		CharSequence[] datasetFields = { "name", "description", "sample.name", "sample.type.name", "type.name",
+				"visitId" };
 		datasetParser.setAllowLeadingWildcard(true);
 		datasetParser.setAnalyzer(analyzer);
 		datasetParser.setMultiFields(datasetFields);
@@ -97,9 +118,9 @@ public class DocumentMapping {
 		investigationParser.setAnalyzer(analyzer);
 		investigationParser.setMultiFields(investigationFields);
 
-		CharSequence[] sampleFields = { "name", "type.name" };
+		CharSequence[] sampleFields = { "sample.name", "sample.type.name" };
 		sampleParser.setAllowLeadingWildcard(true);
 		sampleParser.setAnalyzer(analyzer);
 		sampleParser.setMultiFields(sampleFields);
-    }
+	}
 }

@@ -1279,7 +1279,6 @@ public class Lucene {
 				document.add(new NumericDocValuesField("id.long", value));
 				document.add(new StoredField("id.long", value));
 			}
-			// TODO add special case for startDate -> date to make sorting easier?
 			if (DocumentMapping.longFields.contains(key)) {
 				document.add(new NumericDocValuesField(key, json.getJsonNumber(key).longValueExact()));
 			} else if (DocumentMapping.doubleFields.contains(key)) {
@@ -1345,17 +1344,17 @@ public class Lucene {
 
 	/**
 	 * Returns a new Lucene Document that has the same fields as were present in
-	 * oldDocument, except in cases where the field name starts with fieldPrefix.
+	 * oldDocument, except those provided as an argument to prune.
 	 * 
-	 * @param fieldPrefix Any fields with a name starting with this String will not
+	 * @param fields These fields will not
 	 *                    be present in the returned Document.
 	 * @param oldDocument Lucene Document to be pruned.
 	 * @return Lucene Document with pruned fields.
 	 */
-	private Document pruneDocument(String fieldPrefix, Document oldDocument) {
+	private Document pruneDocument(Set<String> fields, Document oldDocument) {
 		Document newDocument = new Document();
 		for (IndexableField field : oldDocument.getFields()) {
-			if (!field.name().startsWith(fieldPrefix)) {
+			if (!fields.contains(field.name())) {
 				addSortField(field, newDocument);
 				newDocument.add(field);
 			}
@@ -1446,7 +1445,7 @@ public class Lucene {
 			IndexSearcher searcher = getSearcher(new HashMap<>(), parentRelationship.parentName);
 
 			int blockSize = 10000;
-			TermQuery query = new TermQuery(new Term(parentRelationship.fieldPrefix + ".id", childId));
+			TermQuery query = new TermQuery(new Term(parentRelationship.joiningField, childId));
 			Sort sort = new Sort(new SortField("id", Type.STRING));
 			ScoreDoc[] scoreDocs = searcher.search(query, blockSize, sort).scoreDocs;
 			while (scoreDocs.length != 0) {
@@ -1454,7 +1453,7 @@ public class Lucene {
 				for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
 					Document oldDocument = searcher.doc(scoreDoc.doc);
 					String parentId = oldDocument.get("id");
-					Document newDocument = delete ? pruneDocument(parentRelationship.fieldPrefix, oldDocument)
+					Document newDocument = delete ? pruneDocument(parentRelationship.fields, oldDocument)
 							: updateDocument(operationBody.getJsonObject("doc"), oldDocument);
 					logger.trace("updateByRelation: {}", newDocument);
 					bucket.updateDocument(new Term("id", parentId), facetsConfig.build(newDocument));

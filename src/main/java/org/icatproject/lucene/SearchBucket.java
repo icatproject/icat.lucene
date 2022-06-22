@@ -184,7 +184,14 @@ public class SearchBucket {
 
                     text = jsonQuery.getString("text", null);
                     if (text != null) {
-                        luceneQuery.add(DocumentMapping.investigationParser.parse(text, null), Occur.MUST);
+                        Builder textBuilder = new BooleanQuery.Builder();
+                        textBuilder.add(DocumentMapping.investigationParser.parse(text, null), Occur.SHOULD);
+
+                        IndexSearcher sampleSearcher = lucene.getSearcher(searcherMap, "Sample");
+                        Query joinedSampleQuery = JoinUtil.createJoinQuery("sample.investigation.id", false, "id",
+                                DocumentMapping.sampleParser.parse(text, null), sampleSearcher, ScoreMode.Avg);
+                        textBuilder.add(joinedSampleQuery, Occur.SHOULD);
+                        luceneQuery.add(textBuilder.build(), Occur.MUST);
                     }
 
                     buildDateRanges(luceneQuery, jsonQuery, "lower", "upper", "startDate", "endDate");
@@ -197,21 +204,6 @@ public class SearchBucket {
                             Query toQuery = JoinUtil.createJoinQuery("investigation.id", false, "id",
                                     paramQuery.build(),
                                     parameterSearcher, ScoreMode.None);
-                            luceneQuery.add(toQuery, Occur.MUST);
-                        }
-                    }
-
-                    if (jsonQuery.containsKey("samples")) {
-                        JsonArray samples = jsonQuery.getJsonArray("samples");
-                        IndexSearcher sampleSearcher = lucene.getSearcher(searcherMap, "Sample");
-
-                        for (JsonValue s : samples) {
-                            JsonString sample = (JsonString) s;
-                            BooleanQuery.Builder sampleQuery = new BooleanQuery.Builder();
-                            sampleQuery.add(DocumentMapping.sampleParser.parse(sample.getString(), null), Occur.MUST);
-                            Query toQuery = JoinUtil.createJoinQuery("investigation.id", false, "id",
-                                    sampleQuery.build(),
-                                    sampleSearcher, ScoreMode.None);
                             luceneQuery.add(toQuery, Occur.MUST);
                         }
                     }
