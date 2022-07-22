@@ -108,7 +108,7 @@ public class SearchBucket {
         try (JsonReader r = Json.createReader(request.getInputStream())) {
             JsonObject o = r.readObject();
             parseFields(o);
-            parseDimensions(o); // Don't need for DF
+            parseDimensions(o);
             JsonObject jsonQuery = o.getJsonObject("query");
             BooleanQuery.Builder luceneQuery = new BooleanQuery.Builder();
             String userName;
@@ -300,8 +300,14 @@ public class SearchBucket {
                     // BUT only if we haven't already nested the queries (as we do when the key was
                     // just a nested entity)
                     IndexSearcher nestedSearcher = lucene.getSearcher(searcherMap, filterTarget);
-                    Query nestedQuery = JoinUtil.createJoinQuery(target + ".id", false, "id", dimensionQuery,
-                            nestedSearcher, ScoreMode.None);
+                    Query nestedQuery;
+                    if (filterTarget.equals("sample") && !target.equals("investigation")) {
+                        nestedQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id", dimensionQuery,
+                                nestedSearcher, ScoreMode.None);
+                    } else {
+                        nestedQuery = JoinUtil.createJoinQuery(target + ".id", false, "id", dimensionQuery,
+                                nestedSearcher, ScoreMode.None);
+                    }
                     queryBuilder.add(nestedQuery, Occur.FILTER);
                 } else {
                     // Otherwise, just add as SHOULD to the main query directly
@@ -343,12 +349,26 @@ public class SearchBucket {
                         if (nestedFilter.containsKey("value")) {
                             TermQuery query = new TermQuery(new Term(nestedField + ".keyword", nestedFilter.getString("value")));
                             nestedBoolBuilder.add(query, Occur.FILTER);
+                        } else if (nestedFilter.containsKey("exact")) {
+                            buildNestedExactQuery(nestedField, nestedFilter, nestedBoolBuilder);
                         } else {
                             buildNestedRangeQuery(nestedField, nestedFilter, nestedBoolBuilder);
                         }
                     });
-                    return JoinUtil.createJoinQuery(target + ".id", false, "id", nestedBoolBuilder.build(),
-                            nestedSearcher, ScoreMode.None);
+                    if (fld.contains("sample") && !target.equals("investigation")) {
+                        // Datasets and Datafiles join by sample.id on both fields
+                        return JoinUtil.createJoinQuery("sample.id", false, "sample.id", nestedBoolBuilder.build(),
+                                nestedSearcher, ScoreMode.None);
+                    } else if (fld.equals("sampleparameter") && target.equals("investigation")) {
+                        Query sampleQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id", nestedBoolBuilder.build(),
+                                nestedSearcher, ScoreMode.None);
+                        Query investigationQuery = JoinUtil.createJoinQuery("sample.investigation.id", false, "id", sampleQuery,
+                                lucene.getSearcher(searcherMap, "sample"), ScoreMode.None);
+                        return investigationQuery;
+                    } else {
+                        return JoinUtil.createJoinQuery(target + ".id", false, "id", nestedBoolBuilder.build(),
+                                nestedSearcher, ScoreMode.None);
+                    }
                 } else {
                     // Single range of values for a field
                     JsonNumber from = valueObject.getJsonNumber("from");
@@ -363,6 +383,52 @@ public class SearchBucket {
             default:
                 throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
                         "filter object values should be STRING or OBJECT, but were " + valueType);
+        }
+    }
+
+    /**
+     * Builds an exact numeric query, intended for use with numeric or date/time parameters.
+     * 
+     * @param fld         Name of the field to apply the range to.
+     * @param valueObject JsonObject containing "exact", and optionally "units"
+     *                    as keys for an exact value.
+     * @param builder     BooleanQuery.Builder for the nested query
+     */
+    private void buildNestedExactQuery(String fld, JsonObject valueObject, BooleanQuery.Builder builder) {
+        if (DocumentMapping.longFields.contains(fld)) {
+            long exact = valueObject.getJsonNumber("exact").longValueExact();
+            builder.add(LongPoint.newExactQuery(fld, exact), Occur.FILTER);
+        } else {
+            Builder rangeBuilder = new BooleanQuery.Builder();
+            Builder exactOrRangeBuilder = new BooleanQuery.Builder();
+            double exact = valueObject.getJsonNumber("exact").doubleValue();
+            String units = valueObject.getString("units", null);
+            if (units != null) {
+                SystemValue exactValue = lucene.icatUnits.new SystemValue(exact, units);
+                if (exactValue.value != null ) {
+                    // If we were able to parse the units, apply query to the SI value
+                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeTopSI", exactValue.value, Double.POSITIVE_INFINITY), Occur.FILTER);
+                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeBottomSI", Double.NEGATIVE_INFINITY, exactValue.value), Occur.FILTER);
+                    exactOrRangeBuilder.add(rangeBuilder.build(), Occur.SHOULD);
+                    exactOrRangeBuilder.add(DoublePoint.newExactQuery(fld + "SI", exactValue.value), Occur.SHOULD);
+                    builder.add(exactOrRangeBuilder.build(), Occur.FILTER);
+                } else {
+                    // If units could not be parsed, make them part of the query on the raw data
+                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeTop", exact, Double.POSITIVE_INFINITY), Occur.FILTER);
+                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeBottom", Double.NEGATIVE_INFINITY, exact), Occur.FILTER);
+                    exactOrRangeBuilder.add(rangeBuilder.build(), Occur.SHOULD);
+                    exactOrRangeBuilder.add(DoublePoint.newExactQuery(fld, exact), Occur.SHOULD);
+                    builder.add(exactOrRangeBuilder.build(), Occur.FILTER);
+                    builder.add(new TermQuery(new Term("type.units", units)), Occur.FILTER);
+                }
+            } else {
+                // If units were not provided, just apply to the raw data
+                rangeBuilder.add(DoublePoint.newRangeQuery("rangeTop", exact, Double.POSITIVE_INFINITY), Occur.FILTER);
+                rangeBuilder.add(DoublePoint.newRangeQuery("rangeBottom", Double.NEGATIVE_INFINITY, exact), Occur.FILTER);
+                exactOrRangeBuilder.add(rangeBuilder.build(), Occur.SHOULD);
+                exactOrRangeBuilder.add(DoublePoint.newExactQuery(fld, exact), Occur.SHOULD);
+                builder.add(exactOrRangeBuilder.build(), Occur.FILTER);
+            }
         }
     }
 
@@ -402,7 +468,7 @@ public class SearchBucket {
                 } else {
                     // If units could not be parsed, make them part of the query on the raw data
                     builder.add(DoublePoint.newRangeQuery(fld, from, to), Occur.FILTER);
-                    builder.add(new TermQuery(new Term("type.units.keyword", units)), Occur.FILTER);
+                    builder.add(new TermQuery(new Term("type.units", units)), Occur.FILTER);
                 }
             } else {
                 // If units were not provided, just apply to the raw data

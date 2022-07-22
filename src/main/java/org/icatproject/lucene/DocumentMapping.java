@@ -19,16 +19,15 @@ public class DocumentMapping {
 		public Set<String> fields;
 
 		/**
-		 * @param parentName  Name of the parent entity.
+		 * @param parentName   Name of the parent entity.
 		 * @param joiningField Field that joins the child to its parent.
-		 * @param fields Fields that should be updated by this relationship.
+		 * @param fields       Fields that should be updated by this relationship.
 		 */
 		public ParentRelationship(String parentName, String joiningField, String... fields) {
 			this.parentName = parentName;
 			this.joiningField = joiningField;
 			this.fields = new HashSet<>(Arrays.asList(fields));
 		}
-
 	}
 
 	public static final Set<String> doubleFields = new HashSet<>();
@@ -47,20 +46,23 @@ public class DocumentMapping {
 	public static final StandardQueryParser sampleParser = new StandardQueryParser();
 
 	static {
-		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI"));
+		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI", "rangeTop", "rangeTopSI", "rangeBottom",
+				"rangeBottomSI"));
 		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name", "stringValue"));
 		longFields.addAll(
-				Arrays.asList("date", "startDate", "endDate", "dateTimeValue", "investigation.startDate", "fileSize"));
-		sortFields.addAll(Arrays.asList("datafile.id", "dataset.id", "investigation.id", "instrument.id", "id",
-				"sample.investigation.id", "date", "name", "stringValue", "dateTimeValue", "numericValue",
-				"numericValueSI", "fileSize"));
+				Arrays.asList("date", "startDate", "endDate", "dateTimeValue", "investigation.startDate", "fileSize",
+						"fileCount"));
+		sortFields.addAll(
+				Arrays.asList("datafile.id", "dataset.id", "investigation.id", "instrument.id", "id", "sample.id",
+						"sample.investigation.id", "date", "name", "stringValue", "dateTimeValue", "numericValue",
+						"numericValueSI", "fileSize", "fileCount"));
 		textFields.addAll(Arrays.asList("name", "visitId", "description", "location", "dataset.name",
 				"investigation.name", "instrument.name", "instrument.fullName", "datafileFormat.name", "sample.name",
-				"sample.type.name", "title", "summary", "facility.name", "user.fullName", "type.name"));
+				"sample.type.name", "title", "summary", "facility.name", "user.fullName", "type.name", "doi"));
 
 		indexedEntities.addAll(Arrays.asList("Datafile", "Dataset", "Investigation", "DatafileParameter",
 				"DatasetParameter", "InstrumentScientist", "InvestigationInstrument", "InvestigationParameter",
-				"InvestigationUser", "Sample"));
+				"InvestigationUser", "Sample", "SampleParameter"));
 
 		relationships.put("Instrument",
 				new ParentRelationship[] { new ParentRelationship("InvestigationInstrument", "instrument.id",
@@ -88,7 +90,8 @@ public class DocumentMapping {
 		relationships.put("ParameterType",
 				new ParentRelationship[] { new ParentRelationship("DatafileParameter", "type.id", "type.name"),
 						new ParentRelationship("DatasetParameter", "type.id", "type.name"),
-						new ParentRelationship("InvestigationParameter", "type.id", "type.name") });
+						new ParentRelationship("InvestigationParameter", "type.id", "type.name"),
+						new ParentRelationship("SampleParameter", "type.id", "type.name") });
 		relationships.put("Investigation",
 				new ParentRelationship[] {
 						new ParentRelationship("Dataset", "investigation.id", "investigation.name",
@@ -101,19 +104,19 @@ public class DocumentMapping {
 		genericParser.setAnalyzer(analyzer);
 
 		CharSequence[] datafileFields = { "name", "description", "location", "datafileFormat.name", "visitId",
-				"sample.name", "sample.type.name" };
+				"sample.name", "sample.type.name", "doi" };
 		datafileParser.setAllowLeadingWildcard(true);
 		datafileParser.setAnalyzer(analyzer);
 		datafileParser.setMultiFields(datafileFields);
 
 		CharSequence[] datasetFields = { "name", "description", "sample.name", "sample.type.name", "type.name",
-				"visitId" };
+				"visitId", "doi" };
 		datasetParser.setAllowLeadingWildcard(true);
 		datasetParser.setAnalyzer(analyzer);
 		datasetParser.setMultiFields(datasetFields);
 
 		CharSequence[] investigationFields = { "name", "visitId", "title", "summary", "facility.name",
-				"type.name" };
+				"type.name", "doi" };
 		investigationParser.setAllowLeadingWildcard(true);
 		investigationParser.setAnalyzer(analyzer);
 		investigationParser.setMultiFields(investigationFields);

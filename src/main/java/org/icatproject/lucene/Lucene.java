@@ -28,6 +28,7 @@ import javax.ejb.Singleton;
 import javax.json.Json;
 import javax.json.JsonArray;
 import javax.json.JsonException;
+import javax.json.JsonNumber;
 import javax.json.JsonObject;
 import javax.json.JsonObjectBuilder;
 import javax.json.JsonReader;
@@ -478,7 +479,8 @@ public class Lucene {
 			updateByRelation(operationBody, false);
 		}
 		if (DocumentMapping.indexedEntities.contains(entityName)) {
-			Document document = parseDocument(operationBody.getJsonObject("doc"));
+			JsonObject documentObject = operationBody.getJsonObject("doc");
+			Document document = parseDocument(documentObject);
 			logger.trace("create {} {}", entityName, document.toString());
 			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
 			if (bucket.locked.get()) {
@@ -486,6 +488,77 @@ public class Lucene {
 						"Lucene locked for " + entityName);
 			}
 			bucket.addDocument(facetsConfig.build(document));
+			// Special case for filesizes
+			if (entityName.equals("Datafile")) {
+				JsonNumber jsonFileSize = documentObject.getJsonNumber("fileSize");
+				if (jsonFileSize != null) {
+					String datasetId = documentObject.getString("dataset.id", null);
+					String investigationId = documentObject.getString("investigation.id", null);
+					logger.trace("Aggregating {} to {}, {}", jsonFileSize.longValue(), datasetId, investigationId);
+					aggregateFileSize(jsonFileSize.longValueExact(), 0, 1, datasetId, "dataset");
+					aggregateFileSize(jsonFileSize.longValueExact(), 0, 1, investigationId, "investigation");
+				}
+			}
+		}
+	}
+
+	/**
+	 * Changes the fileSize on an entity by the specified amount. This is used to
+	 * aggregate the individual fileSize of Datafiles up to Dataset and
+	 * Investigation sizes.
+	 * 
+	 * @param sizeToAdd      Increases the fileSize of the entity by this much.
+	 *                       Should be 0 for deletes.
+	 * @param sizeToSubtract Decreases the fileSize of the entity by this much.
+	 *                       Should be 0 for creates.
+	 * @param deltaFileCount Changes the file count by this much.
+	 * @param entityId       Icat id of entity to update.
+	 * @param index          Index (entity) to update.
+	 * @throws IOException
+	 */
+	private void aggregateFileSize(long sizeToAdd, long sizeToSubtract, long deltaFileCount, String entityId, String index)
+			throws IOException {
+		long deltaFileSize = sizeToAdd - sizeToSubtract;
+		if (entityId != null && (deltaFileSize != 0 || deltaFileCount != 0)) {
+			IndexBucket indexBucket = indexBuckets.computeIfAbsent(index, k -> new IndexBucket(k));
+			for (ShardBucket shardBucket : indexBucket.shardList) {
+				shardBucket.commit();
+				IndexSearcher searcher = shardBucket.searcherManager.acquire();
+				Term idTerm = new Term("id", entityId);
+				TopDocs topDocs = searcher.search(new TermQuery(idTerm), 1);
+				if (topDocs.totalHits.value == 1) {
+					int docId = topDocs.scoreDocs[0].doc;
+					Document document = searcher.doc(docId);
+					shardBucket.searcherManager.release(searcher);
+					Set<String> prunedFields = new HashSet<>();
+					List<IndexableField> fieldsToAdd = new ArrayList<>();
+
+					if (deltaFileSize != 0) {
+						prunedFields.add("fileSize");
+						long oldSize = document.getField("fileSize").numericValue().longValue();
+						long newSize = oldSize == -1 ? deltaFileSize: oldSize + deltaFileSize;
+						fieldsToAdd.add(new LongPoint("fileSize", newSize));
+						fieldsToAdd.add(new StoredField("fileSize", newSize));
+						fieldsToAdd.add(new NumericDocValuesField("fileSize", newSize));
+					}
+
+					if (deltaFileCount != 0) {
+						prunedFields.add("fileCount");
+						long oldCount = document.getField("fileCount").numericValue().longValue();
+						long newCount = oldCount + deltaFileCount;
+						fieldsToAdd.add(new LongPoint("fileCount", newCount));
+						fieldsToAdd.add(new StoredField("fileCount", newCount));
+						fieldsToAdd.add(new NumericDocValuesField("fileCount", newCount));
+					}
+
+					Document newDocument = pruneDocument(prunedFields, document);
+					fieldsToAdd.forEach(field -> newDocument.add(field));
+					shardBucket.indexWriter.updateDocument(idTerm, facetsConfig.build(newDocument));
+					shardBucket.commit();
+					break;
+				}
+				shardBucket.searcherManager.release(searcher);
+			}
 		}
 	}
 
@@ -597,8 +670,31 @@ public class Lucene {
 							"Lucene locked for " + entityName);
 				}
 				logger.trace("delete {} {}", entityName, icatId);
+				// Special case for filesizes
+				Term term = new Term("id", icatId);
+				if (entityName.equals("Datafile")) {
+					long sizeToSubtract = 0;
+					for (ShardBucket shardBucket : bucket.shardList) {
+						IndexSearcher datafileSearcher = shardBucket.searcherManager.acquire();
+						TopDocs topDocs = datafileSearcher.search(new TermQuery(term), 1);
+						if (topDocs.totalHits.value == 1) {
+							int docId = topDocs.scoreDocs[0].doc;
+							Document datasetDocument = datafileSearcher.doc(docId);
+							sizeToSubtract = datasetDocument.getField("fileSize").numericValue().longValue();
+							if (sizeToSubtract > 0) {
+								String datasetId = datasetDocument.getField("dataset.id").stringValue();
+								String investigationId = datasetDocument.getField("investigation.id").stringValue();
+								aggregateFileSize(0, sizeToSubtract, -1, datasetId, "dataset");
+								aggregateFileSize(0, sizeToSubtract, -1, investigationId, "investigation");
+							}
+							shardBucket.searcherManager.release(datafileSearcher);
+							break;
+						}
+						shardBucket.searcherManager.release(datafileSearcher);
+					}
+				}
 				for (ShardBucket shardBucket : bucket.shardList) {
-					shardBucket.indexWriter.deleteDocuments(new Term("id", icatId));
+					shardBucket.indexWriter.deleteDocuments(term);
 				}
 			} catch (IOException e) {
 				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
@@ -1114,10 +1210,18 @@ public class Lucene {
 									: sortField.getType();
 							switch (type) {
 								case LONG:
-									gen.write(indexableField.numericValue().longValue());
+									if (indexableField.numericValue() != null) {
+										gen.write(indexableField.numericValue().longValue());
+									} else if (indexableField.stringValue() != null) {
+										gen.write(new Long(indexableField.stringValue()));
+									}
 									break;
 								case DOUBLE:
-									gen.write(indexableField.numericValue().doubleValue());
+									if (indexableField.numericValue() != null) {
+										gen.write(indexableField.numericValue().doubleValue());
+									} else if (indexableField.stringValue() != null) {
+										gen.write(new Double(indexableField.stringValue()));
+									}
 									break;
 								case STRING:
 									gen.write(indexableField.stringValue());
@@ -1237,28 +1341,75 @@ public class Lucene {
 		// Whenever the units are set or changed, convert to SI
 		if (key.equals("type.units")) {
 			String unitString = json.getString("type.units");
-			IndexableField field = document.getField("numericValue");
-			double value;
-			if (field != null) {
-				value = NumericUtils.sortableLongToDouble(field.numericValue().longValue());
-			} else if (json.containsKey("numericValue")) {
-				value = json.getJsonNumber(key).doubleValue();
-			} else {
-				// Strings and date/time values also have units, so if we aren't dealing with a
-				// number don't convert
-				return;
-			}
-			logger.trace("Attempting to convert {} {}", value, unitString);
-			SystemValue systemValue = icatUnits.new SystemValue(value, unitString);
-			if (systemValue.units != null) {
-				document.add(new StringField("type.unitsSI", systemValue.units, Store.YES));
-			}
-			if (systemValue.value != null) {
-				document.add(new DoublePoint("numericValueSI", systemValue.value));
-				document.add(new StoredField("numericValueSI", systemValue.value));
-				long sortableLong = NumericUtils.doubleToSortableLong(systemValue.value);
-				document.add(new NumericDocValuesField("numericValueSI", sortableLong));
-			}
+			convertValue(document, json, unitString, "numericValue");
+			convertValue(document, json, unitString, "rangeTop");
+			convertValue(document, json, unitString, "rangeBottom");
+		}
+	}
+
+	/**
+	 * Attempts to convert numericFieldName from json into SI units from its recorded unitString, and then add it to the Lucene document.
+	 * 
+	 * @param document Lucene Document to add the field to.
+	 * @param json     JsonObject containing the field/value pairs to be added.
+	 * @param unitString Units of the value to be converted.
+	 * @param numericFieldName Name (key) of the field to convert and add.
+	 */
+	private void convertValue(Document document, JsonObject json, String unitString, String numericFieldName) {
+		IndexableField field = document.getField(numericFieldName);
+		double value;
+		if (field != null) {
+			value = NumericUtils.sortableLongToDouble(field.numericValue().longValue());
+		} else if (json.containsKey(numericFieldName)) {
+			value = json.getJsonNumber(numericFieldName).doubleValue();
+		} else {
+			// If we aren't dealing with the desired numeric field don't convert
+			return;
+		}
+		logger.trace("Attempting to convert {} {}", value, unitString);
+		SystemValue systemValue = icatUnits.new SystemValue(value, unitString);
+		if (systemValue.units != null) {
+			document.add(new StringField("type.unitsSI", systemValue.units, Store.YES));
+		}
+		if (systemValue.value != null) {
+			document.add(new DoublePoint(numericFieldName + "SI", systemValue.value));
+			document.add(new StoredField(numericFieldName + "SI", systemValue.value));
+			long sortableLong = NumericUtils.doubleToSortableLong(systemValue.value);
+			document.add(new NumericDocValuesField(numericFieldName + "SI", sortableLong));
+		}
+	}
+
+	/**
+	 * Adds field to document taking its typing, sorting and faceting into account.
+	 * 
+	 * @param field Lucene IndexableField to add to the document.
+	 * @param document Lucene Document to add the field to.
+	 */
+	private void addField(IndexableField field, Document document) {
+		// SortedDocValuesField need to be indexed in addition to indexing a Field for
+		// searching/storing, so deal with that first
+		addSortField(field, document);
+		String key = field.name();
+
+		// Likewise, faceted fields should be considered separately
+		if (DocumentMapping.facetFields.contains(key)) {
+			String value = field.stringValue();
+			document.add(new SortedSetDocValuesFacetField(key + ".keyword", value));
+			document.add(new StringField(key + ".keyword", value, Store.NO));
+		}
+
+		if (DocumentMapping.doubleFields.contains(key)) {
+			Double value = field.numericValue().doubleValue();
+			document.add(new DoublePoint(key, value));
+			document.add(new StoredField(key, value));
+		} else if (DocumentMapping.longFields.contains(key)) {
+			Long value = field.numericValue().longValue();
+			document.add(new LongPoint(key, value));
+			document.add(new StoredField(key, value));
+		} else if (DocumentMapping.textFields.contains(key)) {
+			document.add(new TextField(key, field.stringValue(), Store.YES));
+		} else {
+			document.add(new StringField(key, field.stringValue(), Store.YES));
 		}
 	}
 
@@ -1346,7 +1497,7 @@ public class Lucene {
 	 * Returns a new Lucene Document that has the same fields as were present in
 	 * oldDocument, except those provided as an argument to prune.
 	 * 
-	 * @param fields These fields will not
+	 * @param fields      These fields will not
 	 *                    be present in the returned Document.
 	 * @param oldDocument Lucene Document to be pruned.
 	 * @return Lucene Document with pruned fields.
@@ -1355,8 +1506,7 @@ public class Lucene {
 		Document newDocument = new Document();
 		for (IndexableField field : oldDocument.getFields()) {
 			if (!fields.contains(field.name())) {
-				addSortField(field, newDocument);
-				newDocument.add(field);
+				addField(field, newDocument);
 			}
 		}
 		return newDocument;
@@ -1405,11 +1555,35 @@ public class Lucene {
 		}
 		if (DocumentMapping.indexedEntities.contains(entityName)) {
 			String icatId = operationBody.getString("_id");
-			Document document = parseDocument(operationBody.getJsonObject("doc"));
+			JsonObject documentObject = operationBody.getJsonObject("doc");
+			Document document = parseDocument(documentObject);
 			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
 			if (bucket.locked.get()) {
 				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
 						"Lucene locked for " + entityName);
+			}
+			// Special case for filesizes
+			if (entityName.equals("Datafile")) {
+				JsonNumber jsonFileSize = documentObject.getJsonNumber("fileSize");
+				if (jsonFileSize != null) {
+					long sizeToSubtract = 0;
+					List<IndexSearcher> datafileSearchers = bucket.acquireSearchers();
+					for (IndexSearcher datafileSearcher : datafileSearchers) {
+						TopDocs topDocs = datafileSearcher.search(new TermQuery(new Term("id", icatId)), 1);
+						if (topDocs.totalHits.value == 1) {
+							int docId = topDocs.scoreDocs[0].doc;
+							Document datasetDocument = datafileSearcher.doc(docId);
+							sizeToSubtract = datasetDocument.getField("fileSize").numericValue().longValue();
+							if (jsonFileSize.longValueExact() != sizeToSubtract) {
+								String datasetId = documentObject.getString("dataset.id", null);
+								String investigationId = documentObject.getString("investigation.id", null);
+								aggregateFileSize(jsonFileSize.longValueExact(), sizeToSubtract, 0, datasetId, "dataset");
+								aggregateFileSize(jsonFileSize.longValueExact(), sizeToSubtract, 0, investigationId, "investigation");
+							}
+							break;
+						}
+					}
+				}
 			}
 			logger.trace("update: {}", document);
 			bucket.updateDocument(new Term("id", icatId), facetsConfig.build(document));
