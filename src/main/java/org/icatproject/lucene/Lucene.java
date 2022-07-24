@@ -415,7 +415,7 @@ public class Lucene {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		} catch (IOException e) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-		} 
+		}
 		logger.debug("Added {} {} documents", documents.size(), entityName);
 	}
 
@@ -519,7 +519,8 @@ public class Lucene {
 	 * @param index          Index (entity) to update.
 	 * @throws IOException
 	 */
-	private void aggregateFileSize(long sizeToAdd, long sizeToSubtract, long deltaFileCount, String entityId, String index)
+	private void aggregateFileSize(long sizeToAdd, long sizeToSubtract, long deltaFileCount, String entityId,
+			String index)
 			throws IOException {
 		long deltaFileSize = sizeToAdd - sizeToSubtract;
 		if (entityId != null && (deltaFileSize != 0 || deltaFileCount != 0)) {
@@ -539,7 +540,7 @@ public class Lucene {
 					if (deltaFileSize != 0) {
 						prunedFields.add("fileSize");
 						long oldSize = document.getField("fileSize").numericValue().longValue();
-						long newSize = oldSize == -1 ? deltaFileSize: oldSize + deltaFileSize;
+						long newSize = oldSize + deltaFileSize;
 						fieldsToAdd.add(new LongPoint("fileSize", newSize));
 						fieldsToAdd.add(new StoredField("fileSize", newSize));
 						fieldsToAdd.add(new NumericDocValuesField("fileSize", newSize));
@@ -935,9 +936,10 @@ public class Lucene {
 			throw new IllegalStateException(e.getMessage());
 		}
 
-		logger.info(
-				"Initialised icat.lucene with directory {}, commitSeconds {}, maxShardSize {}, shardedIndices {}, maxSearchTimeSeconds {}",
-				luceneDirectory, luceneCommitMillis, luceneMaxShardSize, shardedIndices, maxSearchTimeSeconds);
+		String format = "Initialised icat.lucene with directory {}, commitSeconds {}, maxShardSize {}, "
+				+ "shardedIndices {}, maxSearchTimeSeconds {}, aggregateFiles {}";
+		logger.info(format, luceneDirectory, luceneCommitMillis, luceneMaxShardSize, shardedIndices,
+				maxSearchTimeSeconds, aggregateFiles);
 	}
 
 	class CommitTimerTask extends TimerTask {
@@ -983,11 +985,14 @@ public class Lucene {
 	}
 
 	/**
-	 * Locks the specified index for population, optionally removing all existing documents and
-	 * preventing normal modify operations until the index is unlocked.
+	 * Locks the specified index for population, optionally removing all existing
+	 * documents and preventing normal modify operations until the index is
+	 * unlocked.
 	 * 
 	 * @param entityName Name of the entity/index to lock.
-	 * @param request    Incoming request. In order to delete all existing documents, the accompanying Json should specify <code>{"delete": true}</code>.
+	 * @param request    Incoming request. In order to delete all existing
+	 *                   documents, the accompanying Json should specify
+	 *                   <code>{"delete": true}</code>.
 	 * @throws LuceneException If already locked, or if there's an IOException when
 	 *                         deleting documents.
 	 */
@@ -995,14 +1000,16 @@ public class Lucene {
 	@Path("lock/{entityName}")
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
-	public String lock(@PathParam("entityName") String entityName, @Context HttpServletRequest request) throws LuceneException {
+	public String lock(@PathParam("entityName") String entityName, @Context HttpServletRequest request)
+			throws LuceneException {
 		try (JsonReader reader = Json.createReader(request.getInputStream())) {
 			boolean delete = reader.readObject().getBoolean("delete", false);
 			logger.info("Requesting lock of {} index, delete={}", entityName, delete);
 			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
 
 			if (!bucket.locked.compareAndSet(false, true)) {
-				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE, "Lucene already locked for " + entityName);
+				String message = "Lucene already locked for " + entityName;
+				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE, message);
 			}
 			JsonObjectBuilder builder = Json.createObjectBuilder();
 			if (delete) {
@@ -1371,11 +1378,13 @@ public class Lucene {
 	}
 
 	/**
-	 * Attempts to convert numericFieldName from json into SI units from its recorded unitString, and then add it to the Lucene document.
+	 * Attempts to convert numericFieldName from json into SI units from its
+	 * recorded unitString, and then add it to the Lucene document.
 	 * 
-	 * @param document Lucene Document to add the field to.
-	 * @param json     JsonObject containing the field/value pairs to be added.
-	 * @param unitString Units of the value to be converted.
+	 * @param document         Lucene Document to add the field to.
+	 * @param json             JsonObject containing the field/value pairs to be
+	 *                         added.
+	 * @param unitString       Units of the value to be converted.
 	 * @param numericFieldName Name (key) of the field to convert and add.
 	 */
 	private void convertValue(Document document, JsonObject json, String unitString, String numericFieldName) {
@@ -1405,7 +1414,7 @@ public class Lucene {
 	/**
 	 * Adds field to document taking its typing, sorting and faceting into account.
 	 * 
-	 * @param field Lucene IndexableField to add to the document.
+	 * @param field    Lucene IndexableField to add to the document.
 	 * @param document Lucene Document to add the field to.
 	 */
 	private void addField(IndexableField field, Document document) {
@@ -1597,11 +1606,12 @@ public class Lucene {
 							int docId = topDocs.scoreDocs[0].doc;
 							Document datasetDocument = datafileSearcher.doc(docId);
 							sizeToSubtract = datasetDocument.getField("fileSize").numericValue().longValue();
-							if (jsonFileSize.longValueExact() != sizeToSubtract) {
+							long sizeToAdd = jsonFileSize.longValueExact();
+							if (sizeToAdd != sizeToSubtract) {
 								String datasetId = documentObject.getString("dataset.id", null);
 								String investigationId = documentObject.getString("investigation.id", null);
-								aggregateFileSize(jsonFileSize.longValueExact(), sizeToSubtract, 0, datasetId, "dataset");
-								aggregateFileSize(jsonFileSize.longValueExact(), sizeToSubtract, 0, investigationId, "investigation");
+								aggregateFileSize(sizeToAdd, sizeToSubtract, 0, datasetId, "dataset");
+								aggregateFileSize(sizeToAdd, sizeToSubtract, 0, investigationId, "investigation");
 							}
 							break;
 						}
