@@ -71,6 +71,7 @@ import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Sort;
@@ -331,6 +332,7 @@ public class Lucene {
 	private int luceneCommitMillis;
 	private Long luceneMaxShardSize;
 	private long maxSearchTimeSeconds;
+	private boolean aggregateFiles;
 
 	private AtomicLong bucketNum = new AtomicLong();
 	private Map<String, IndexBucket> indexBuckets = new ConcurrentHashMap<>();
@@ -408,11 +410,12 @@ public class Lucene {
 			for (JsonObject document : documents) {
 				createNow(entityName, document);
 			}
-		} catch (IOException | JsonException e) {
-
+		} catch (JsonException e) {
 			logger.error("Could not parse JSON from {}", value.toString());
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
-		}
+		} catch (IOException e) {
+			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
+		} 
 		logger.debug("Added {} {} documents", documents.size(), entityName);
 	}
 
@@ -489,7 +492,7 @@ public class Lucene {
 			}
 			bucket.addDocument(facetsConfig.build(document));
 			// Special case for filesizes
-			if (entityName.equals("Datafile")) {
+			if (aggregateFiles && entityName.equals("Datafile")) {
 				JsonNumber jsonFileSize = documentObject.getJsonNumber("fileSize");
 				if (jsonFileSize != null) {
 					String datasetId = documentObject.getString("dataset.id", null);
@@ -573,10 +576,6 @@ public class Lucene {
 	 */
 	private void createNow(String entityName, JsonObject documentJson)
 			throws NumberFormatException, IOException, LuceneException {
-		if (!documentJson.containsKey("id")) {
-			throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
-					"id was not in the document keys " + documentJson.keySet());
-		}
 		Document document = parseDocument(documentJson);
 		logger.trace("create {} {}", entityName, document.toString());
 		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
@@ -672,7 +671,7 @@ public class Lucene {
 				logger.trace("delete {} {}", entityName, icatId);
 				// Special case for filesizes
 				Term term = new Term("id", icatId);
-				if (entityName.equals("Datafile")) {
+				if (aggregateFiles && entityName.equals("Datafile")) {
 					long sizeToSubtract = 0;
 					for (ShardBucket shardBucket : bucket.shardList) {
 						IndexSearcher datafileSearcher = shardBucket.searcherManager.acquire();
@@ -741,13 +740,11 @@ public class Lucene {
 					parentId = document.get("id");
 				} else {
 					parentId = document.get("investigation.id");
-					logger.debug("investigation.id {}", parentId);
 				}
 			} else {
 				fld = entityName.toLowerCase() + ".id";
 				parentId = document.get("id");
 			}
-			logger.debug("fld {}, parentId {}", fld, parentId);
 			joinedSearch.query = new TermQuery(new Term(fld, parentId));
 			joinedSearch.sort = new Sort(new SortedNumericSortField("id.long", Type.LONG));
 			TopFieldDocs topFieldDocs = searchShards(joinedSearch, 100, shards, null);
@@ -923,6 +920,7 @@ public class Lucene {
 			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), new Long(Integer.MAX_VALUE + 1));
 			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds")
 					: 5;
+			aggregateFiles = props.getBoolean("aggregateFiles", false);
 
 			timer = new Timer("LuceneCommitTimer");
 			timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
@@ -985,26 +983,51 @@ public class Lucene {
 	}
 
 	/**
-	 * Locks the specified index for population, removing all existing documents and
+	 * Locks the specified index for population, optionally removing all existing documents and
 	 * preventing normal modify operations until the index is unlocked.
 	 * 
 	 * @param entityName Name of the entity/index to lock.
+	 * @param request    Incoming request. In order to delete all existing documents, the accompanying Json should specify <code>{"delete": true}</code>.
 	 * @throws LuceneException If already locked, or if there's an IOException when
 	 *                         deleting documents.
 	 */
 	@POST
 	@Path("lock/{entityName}")
-	public void lock(@PathParam("entityName") String entityName) throws LuceneException {
-		logger.info("Requesting lock of {} index", entityName);
-		IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Produces(MediaType.APPLICATION_JSON)
+	public String lock(@PathParam("entityName") String entityName, @Context HttpServletRequest request) throws LuceneException {
+		try (JsonReader reader = Json.createReader(request.getInputStream())) {
+			boolean delete = reader.readObject().getBoolean("delete", false);
+			logger.info("Requesting lock of {} index, delete={}", entityName, delete);
+			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
 
-		if (!bucket.locked.compareAndSet(false, true)) {
-			throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE, "Lucene already locked for " + entityName);
-		}
-		try {
-			for (ShardBucket shardBucket : bucket.shardList) {
-				shardBucket.indexWriter.deleteAll();
+			if (!bucket.locked.compareAndSet(false, true)) {
+				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE, "Lucene already locked for " + entityName);
 			}
+			JsonObjectBuilder builder = Json.createObjectBuilder();
+			if (delete) {
+				for (ShardBucket shardBucket : bucket.shardList) {
+					shardBucket.indexWriter.deleteAll();
+				}
+				// Reset the shardList so we reset the routing
+				bucket.shardList = Arrays.asList(bucket.shardList.get(0));
+				return builder.add("currentId", 0).build().toString();
+			}
+			SearchBucket searchBucket = new SearchBucket(this);
+			searchBucket.query = new MatchAllDocsQuery();
+			searchBucket.fields.add("id");
+			searchBucket.scored = false;
+			searchBucket.sort = new Sort(new SortedNumericSortField("id.long", Type.LONG, true));
+			TopFieldDocs topFieldDocs = searchShards(searchBucket, 1, bucket.shardList, null);
+			if (topFieldDocs.totalHits.value == 0) {
+				return builder.add("currentId", 0).build().toString();
+			}
+			int shardIndex = topFieldDocs.scoreDocs[0].shardIndex;
+			int doc = topFieldDocs.scoreDocs[0].doc;
+			IndexSearcher searcher = bucket.shardList.get(shardIndex).searcherManager.acquire();
+			String id = searcher.doc(doc).get("id");
+			bucket.shardList.get(shardIndex).searcherManager.release(searcher);
+			return builder.add("currentId", new Long(id)).build().toString();
 		} catch (IOException e) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
@@ -1563,7 +1586,7 @@ public class Lucene {
 						"Lucene locked for " + entityName);
 			}
 			// Special case for filesizes
-			if (entityName.equals("Datafile")) {
+			if (aggregateFiles && entityName.equals("Datafile")) {
 				JsonNumber jsonFileSize = documentObject.getJsonNumber("fileSize");
 				if (jsonFileSize != null) {
 					long sizeToSubtract = 0;
