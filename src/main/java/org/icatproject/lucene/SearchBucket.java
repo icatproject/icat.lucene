@@ -32,6 +32,7 @@ import org.apache.lucene.facet.range.LongRange;
 import org.apache.lucene.facet.range.Range;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.flexible.core.QueryNodeException;
+import org.apache.lucene.queryparser.flexible.core.QueryNodeParseException;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.IndexSearcher;
@@ -70,7 +71,6 @@ public class SearchBucket {
     public Set<String> fields = new HashSet<String>();
     public Map<String, Set<String>> joinedFields = new HashMap<>();
     public Map<String, FacetedDimension> dimensions = new HashMap<String, FacetedDimension>();
-    public boolean aborted = false;
     private static final SimpleDateFormat df = new SimpleDateFormat("yyyyMMddHHmm");
 
     static {
@@ -222,6 +222,9 @@ public class SearchBucket {
                     query = maybeEmptyQuery(luceneQuery);
                     return;
             }
+        } catch (QueryNodeParseException e) {
+            String message = "Search term could not be parsed due to syntax errors";
+            throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST, message);
         }
     }
 

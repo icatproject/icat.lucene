@@ -69,21 +69,23 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.SortField.Type;
+import org.apache.lucene.search.TimeLimitingCollector.TimeExceededException;
 import org.apache.lucene.search.SortedNumericSortField;
 import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TimeLimitingCollector;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopFieldCollector;
 import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.Counter;
 import org.apache.lucene.util.NumericUtils;
 import org.icatproject.lucene.SearchBucket.SearchType;
 import org.icatproject.lucene.exceptions.LuceneException;
@@ -610,6 +612,9 @@ public class Lucene {
 		} catch (Exception e) {
 			logger.error("Error", e);
 			freeSearcher(uid);
+			if (e instanceof LuceneException) {
+				throw (LuceneException) e;
+			}
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -642,6 +647,9 @@ public class Lucene {
 		} catch (Exception e) {
 			logger.error("Error", e);
 			freeSearcher(uid);
+			if (e instanceof LuceneException) {
+				throw (LuceneException) e;
+			}
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 
@@ -748,11 +756,12 @@ public class Lucene {
 			}
 			joinedSearch.query = new TermQuery(new Term(fld, parentId));
 			joinedSearch.sort = new Sort(new SortedNumericSortField("id.long", Type.LONG));
-			TopFieldDocs topFieldDocs = searchShards(joinedSearch, 100, shards, null);
+			TopFieldDocs topFieldDocs = searchShards(joinedSearch, 100, shards);
 			gen.writeStartArray(joinedEntityName.toLowerCase());
 			for (ScoreDoc joinedHit : topFieldDocs.scoreDocs) {
 				gen.writeStartObject();
-				Document joinedDocument = searchers.get(joinedHit.shardIndex).doc(joinedHit.doc);
+				int joinedShardIndex = joinedHit.shardIndex > 0 ? joinedHit.shardIndex : 0;
+				Document joinedDocument = searchers.get(joinedShardIndex).doc(joinedHit.doc);
 				joinedDocument.forEach(encodeField(gen, search.joinedFields.get(joinedEntityName)));
 				gen.writeEnd();
 			}
@@ -827,6 +836,9 @@ public class Lucene {
 			return luceneFacetResult(entityName, search, searchAfter, maxResults, maxLabels);
 		} catch (Exception e) {
 			freeSearcher(uid);
+			if (e instanceof LuceneException) {
+				throw (LuceneException) e;
+			}
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -838,7 +850,7 @@ public class Lucene {
 	 * @throws LuceneException
 	 */
 	public void freeSearcher(Long uid) throws LuceneException {
-		if (uid != null) { // May not be set for internal calls
+		if (uid != null && searches.containsKey(uid)) { // May not be set for internal calls
 			Map<String, List<IndexSearcher>> search = searches.get(uid).searcherMap;
 			for (Entry<String, List<IndexSearcher>> entry : search.entrySet()) {
 				String name = entry.getKey();
@@ -980,6 +992,9 @@ public class Lucene {
 		} catch (Exception e) {
 			logger.error("Error", e);
 			freeSearcher(uid);
+			if (e instanceof LuceneException) {
+				throw (LuceneException) e;
+			}
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -1020,20 +1035,11 @@ public class Lucene {
 				bucket.shardList = Arrays.asList(bucket.shardList.get(0));
 				return builder.add("currentId", 0).build().toString();
 			}
-			SearchBucket searchBucket = new SearchBucket(this);
-			searchBucket.query = new MatchAllDocsQuery();
-			searchBucket.fields.add("id");
-			searchBucket.scored = false;
-			searchBucket.sort = new Sort(new SortedNumericSortField("id.long", Type.LONG, true));
-			TopFieldDocs topFieldDocs = searchShards(searchBucket, 1, bucket.shardList, null);
-			if (topFieldDocs.totalHits.value == 0) {
-				return builder.add("currentId", 0).build().toString();
-			}
-			int shardIndex = topFieldDocs.scoreDocs[0].shardIndex;
-			int doc = topFieldDocs.scoreDocs[0].doc;
-			IndexSearcher searcher = bucket.shardList.get(shardIndex).searcherManager.acquire();
-			String id = searcher.doc(doc).get("id");
-			bucket.shardList.get(shardIndex).searcherManager.release(searcher);
+			ShardBucket shardBucket = bucket.routeShard();
+			int docCount = shardBucket.documentCount.intValue();
+			IndexSearcher searcher = shardBucket.searcherManager.acquire();
+			String id = searcher.doc(docCount - 1).get("id");
+			shardBucket.searcherManager.release(searcher);
 			return builder.add("currentId", new Long(id)).build().toString();
 		} catch (IOException e) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
@@ -1193,7 +1199,7 @@ public class Lucene {
 		List<ShardBucket> shards = getShards(name);
 		String format = "Search {} with: query {}, maxResults {}, searchAfter {}, scored {}, fields {}";
 		logger.debug(format, name, search.query, maxResults, searchAfter, search.scored, search.fields);
-		TopFieldDocs topFieldDocs = searchShards(search, maxResults, shards, search.searchAfter);
+		TopFieldDocs topFieldDocs = searchShards(search, maxResults, shards);
 		ScoreDoc[] hits = topFieldDocs.scoreDocs;
 		TotalHits totalHits = topFieldDocs.totalHits;
 		SortField[] fields = topFieldDocs.fields;
@@ -1205,121 +1211,141 @@ public class Lucene {
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject();
-			gen.write("aborted", search.aborted);
-			if (!search.aborted) {
-				gen.writeStartArray("results");
-				for (ScoreDoc hit : hits) {
-					encodeResult(name, gen, hit, searchers.get(hit.shardIndex), search);
+			gen.writeStartArray("results");
+			for (ScoreDoc hit : hits) {
+				encodeResult(name, gen, hit, searchers.get(hit.shardIndex), search);
+			}
+			gen.writeEnd(); // array results
+			if (hits.length == maxResults) {
+				ScoreDoc lastDoc = hits[hits.length - 1];
+				gen.writeStartObject("search_after").write("doc", lastDoc.doc).write("shardIndex",
+						lastDoc.shardIndex);
+				float lastScore = lastDoc.score;
+				if (!Float.isNaN(lastScore)) {
+					gen.write("score", lastScore);
 				}
-				gen.writeEnd(); // array results
-				if (hits.length == maxResults) {
-					ScoreDoc lastDoc = hits[hits.length - 1];
-					gen.writeStartObject("search_after").write("doc", lastDoc.doc).write("shardIndex",
-							lastDoc.shardIndex);
-					float lastScore = lastDoc.score;
-					if (!Float.isNaN(lastScore)) {
-						gen.write("score", lastScore);
-					}
-					if (fields != null) {
-						Document lastDocument = searchers.get(lastDoc.shardIndex).doc(lastDoc.doc);
-						gen.writeStartArray("fields");
-						for (SortField sortField : fields) {
-							String fieldName = sortField.getField();
-							if (fieldName == null) {
-								// SCORE sorting will have a null fieldName
+				if (fields != null) {
+					Document lastDocument = searchers.get(lastDoc.shardIndex).doc(lastDoc.doc);
+					gen.writeStartArray("fields");
+					for (SortField sortField : fields) {
+						String fieldName = sortField.getField();
+						if (fieldName == null) {
+							// SCORE sorting will have a null fieldName
+							if (Float.isFinite(lastDoc.score)) {
 								gen.write(lastDoc.score);
-								continue;
 							}
-							IndexableField indexableField = lastDocument.getField(fieldName);
-							if (indexableField == null) {
-								throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Field " + fieldName
-										+ " used for sorting was not present on the Lucene Document; all sortable fields must also be stored.");
-							}
-							Type type = (sortField instanceof SortedNumericSortField)
-									? ((SortedNumericSortField) sortField).getNumericType()
-									: sortField.getType();
-							switch (type) {
-								case LONG:
-									if (indexableField.numericValue() != null) {
-										gen.write(indexableField.numericValue().longValue());
-									} else if (indexableField.stringValue() != null) {
-										gen.write(new Long(indexableField.stringValue()));
-									}
-									break;
-								case DOUBLE:
-									if (indexableField.numericValue() != null) {
-										gen.write(indexableField.numericValue().doubleValue());
-									} else if (indexableField.stringValue() != null) {
-										gen.write(new Double(indexableField.stringValue()));
-									}
-									break;
-								case STRING:
-									gen.write(indexableField.stringValue());
-									break;
-								default:
-									throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR,
-											"SortField.Type must be one of LONG, DOUBLE, STRING, but it was " + type);
-							}
+							continue;
 						}
-						gen.writeEnd(); // end "fields" array
+						IndexableField indexableField = lastDocument.getField(fieldName);
+						if (indexableField == null) {
+							throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, "Field " + fieldName
+									+ " used for sorting was not present on the Lucene Document; all sortable fields must also be stored.");
+						}
+						Type type = (sortField instanceof SortedNumericSortField)
+								? ((SortedNumericSortField) sortField).getNumericType()
+								: sortField.getType();
+						switch (type) {
+							case LONG:
+								if (indexableField.numericValue() != null) {
+									gen.write(indexableField.numericValue().longValue());
+								} else if (indexableField.stringValue() != null) {
+									gen.write(new Long(indexableField.stringValue()));
+								}
+								break;
+							case DOUBLE:
+								if (indexableField.numericValue() != null) {
+									gen.write(indexableField.numericValue().doubleValue());
+								} else if (indexableField.stringValue() != null) {
+									gen.write(new Double(indexableField.stringValue()));
+								}
+								break;
+							case STRING:
+								gen.write(indexableField.stringValue());
+								break;
+							default:
+								throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR,
+										"SortField.Type must be one of LONG, DOUBLE, STRING, but it was " + type);
+						}
 					}
-					gen.writeEnd(); // end "search_after" object
+					gen.writeEnd(); // end "fields" array
 				}
+				gen.writeEnd(); // end "search_after" object
 			}
 			gen.writeEnd(); // end enclosing object
 		}
-		logger.debug("Json returned {}", baos.toString());
+		logger.trace("Json returned {}", baos.toString());
 		return baos.toString();
 	}
 
 	/**
 	 * Performs a search by iterating over all relevant shards.
 	 * 
-	 * @param search         SearchBucket containing the search query, dimensions to
-	 *                       facet etc.
-	 * @param maxResults     The maximum number of results from the search.
-	 * @param shards         List of all ShardBuckets for the entity to be searched.
-	 * @param searchAfterDoc The last Lucene FieldDoc from a previous search.
+	 * @param search     SearchBucket containing the search query, dimensions to
+	 *                   facet etc.
+	 * @param maxResults The maximum number of results from the search.
+	 * @param shards     List of all ShardBuckets for the entity to be searched.
 	 * @return Lucene TopFieldDocs resulting from the search.
 	 * @throws IOException
+	 * @throws LuceneException If the search runs for longer than the allowed time
 	 */
-	private TopFieldDocs searchShards(SearchBucket search, int maxResults, List<ShardBucket> shards,
-			FieldDoc searchAfterDoc) throws IOException {
+	private TopFieldDocs searchShards(SearchBucket search, int maxResults, List<ShardBucket> shards)
+			throws IOException, LuceneException {
+
 		TopFieldDocs topFieldDocs;
-		if (shards.size() > 0) {
-			List<TopFieldDocs> shardHits = new ArrayList<>();
-			int i = 0;
-			int doc = searchAfterDoc != null ? searchAfterDoc.doc : -1;
-			long startTime = System.currentTimeMillis();
-			for (ShardBucket shard : shards) {
-				int docCount = shard.documentCount.intValue();
-				if (searchAfterDoc != null) {
-					if (doc > docCount) {
-						searchAfterDoc.doc = docCount - 1;
-					} else {
-						searchAfterDoc.doc = doc;
+		Counter clock = TimeLimitingCollector.getGlobalCounter();
+		TimeLimitingCollector collector = new TimeLimitingCollector(null, clock, maxSearchTimeSeconds * 1000);
+		int shardsSize = shards.size();
+
+		try {
+			if (shardsSize > 1) {
+				List<TopFieldDocs> shardHits = new ArrayList<>();
+				int doc = search.searchAfter != null ? search.searchAfter.doc : -1;
+				for (ShardBucket shard : shards) {
+					// Handle the possibility of some shards having a higher docCount than the doc
+					// id on searchAfter
+					int docCount = shard.documentCount.intValue();
+					if (search.searchAfter != null) {
+						if (doc > docCount) {
+							search.searchAfter.doc = docCount - 1;
+						} else {
+							search.searchAfter.doc = doc;
+						}
 					}
+
+					// Wrap Collector with TimeLimitingCollector
+					TopFieldCollector topFieldCollector = TopFieldCollector.create(search.sort, maxResults,
+							search.searchAfter, maxResults);
+					collector.setCollector(topFieldCollector);
+
+					IndexSearcher indexSearcher = shard.searcherManager.acquire();
+					indexSearcher.search(search.query, collector);
+					TopFieldDocs topDocs = topFieldCollector.topDocs();
+					if (search.scored) {
+						TopFieldCollector.populateScores(topDocs.scoreDocs, indexSearcher, search.query);
+					}
+					shardHits.add(topDocs);
 				}
-				IndexSearcher indexSearcher = shard.searcherManager.acquire();
-				TopFieldDocs shardDocs = indexSearcher.searchAfter(searchAfterDoc, search.query, maxResults,
-						search.sort, search.scored);
-				shardHits.add(shardDocs);
-				logger.debug("{} on shard {} out of {} total docs", shardDocs.totalHits, i, docCount);
-				i++;
-				long duration = (System.currentTimeMillis() - startTime);
-				if (duration > maxSearchTimeSeconds * 1000) {
-					logger.info("Stopping search after {} shards due to {} ms having elapsed", i, duration);
-					search.aborted = true;
-					break;
+				topFieldDocs = TopFieldDocs.merge(search.sort, 0, maxResults, shardHits.toArray(new TopFieldDocs[0]),
+						true);
+			} else {
+				// Don't need to merge results across shards
+				TopFieldCollector topFieldCollector = TopFieldCollector.create(search.sort, maxResults,
+						search.searchAfter, maxResults);
+				collector.setCollector(topFieldCollector);
+				IndexSearcher indexSearcher = shards.get(0).searcherManager.acquire();
+				indexSearcher.search(search.query, collector);
+				topFieldDocs = topFieldCollector.topDocs();
+				if (search.scored) {
+					TopFieldCollector.populateScores(topFieldDocs.scoreDocs, indexSearcher, search.query);
 				}
 			}
-			topFieldDocs = TopFieldDocs.merge(search.sort, 0, maxResults, shardHits.toArray(new TopFieldDocs[i]), true);
-		} else {
-			IndexSearcher indexSearcher = shards.get(0).searcherManager.acquire();
-			topFieldDocs = indexSearcher.searchAfter(searchAfterDoc, search.query, maxResults, search.sort,
-					search.scored);
+
+			return topFieldDocs;
+
+		} catch (TimeExceededException e) {
+			String message = "Search cancelled for exceeding " + maxSearchTimeSeconds + " seconds";
+			throw new LuceneException(HttpURLConnection.HTTP_GATEWAY_TIMEOUT, message);
 		}
-		return topFieldDocs;
 	}
 
 	/**
