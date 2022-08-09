@@ -69,7 +69,10 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.queryparser.flexible.core.QueryNodeException;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.SearcherManager;
 import org.apache.lucene.search.Sort;
@@ -136,13 +139,15 @@ public class Lucene {
 			}
 			searcherManager = new SearcherManager(indexWriter, null);
 			IndexSearcher indexSearcher = null;
+			int numDocs;
 			try {
 				indexSearcher = searcherManager.acquire();
-				int numDocs = indexSearcher.getIndexReader().numDocs();
+				numDocs = indexSearcher.getIndexReader().numDocs();
 				documentCount = new AtomicLong(numDocs);
 			} finally {
 				searcherManager.release(indexSearcher);
 			}
+			logger.info("Created ShardBucket for {} with {} Documents", directory, numDocs);
 		}
 
 		/**
@@ -182,12 +187,15 @@ public class Lucene {
 				this.entityName = entityName.toLowerCase();
 				Long shardIndex = 0L;
 				java.nio.file.Path shardPath = luceneDirectory.resolve(entityName);
+				ShardBucket shardBucket;
+				// Create at least one shard, then keep creating them so long as directories
+				// exist and already contain Documents
 				do {
-					ShardBucket shardBucket = new ShardBucket(shardPath);
+					shardBucket = new ShardBucket(shardPath);
 					shardList.add(shardBucket);
 					shardIndex++;
 					shardPath = luceneDirectory.resolve(entityName + "_" + shardIndex);
-				} while (Files.isDirectory(shardPath));
+				} while (shardBucket.documentCount.get() > 0 && Files.isDirectory(shardPath));
 				logger.debug("Bucket for {} is now ready with {} shards", entityName, shardIndex);
 			} catch (Throwable e) {
 				logger.error("Can't continue " + e.getClass() + " " + e.getMessage());
@@ -285,6 +293,14 @@ public class Lucene {
 		}
 
 		/**
+		 * @return The ShardBucket currently in use for indexing new Documents.
+		 */
+		public ShardBucket getCurrentShardBucket() {
+			int size = shardList.size();
+			return shardList.get(size - 1);
+		}
+
+		/**
 		 * Provides the ShardBucket that should be used for writing the next Document.
 		 * All Documents up to luceneMaxShardSize are indexed in the first shard, after
 		 * that a new shard is created for the next luceneMaxShardSize Documents and so
@@ -294,11 +310,10 @@ public class Lucene {
 		 * @throws IOException
 		 */
 		public ShardBucket routeShard() throws IOException {
-			int size = shardList.size();
-			ShardBucket shardBucket = shardList.get(size - 1);
+			ShardBucket shardBucket = getCurrentShardBucket();
 			if (shardBucket.documentCount.get() >= luceneMaxShardSize) {
 				shardBucket.indexWriter.commit();
-				shardBucket = buildShardBucket(size);
+				shardBucket = buildShardBucket(shardList.size());
 			}
 			return shardBucket;
 		}
@@ -330,7 +345,6 @@ public class Lucene {
 	private final FacetsConfig facetsConfig = new FacetsConfig();
 
 	private java.nio.file.Path luceneDirectory;
-	private Set<String> shardedIndices;
 	private int luceneCommitMillis;
 	private Long luceneMaxShardSize;
 	private long maxSearchTimeSeconds;
@@ -609,12 +623,9 @@ public class Lucene {
 			SearchBucket search = new SearchBucket(this, SearchType.DATAFILE, request, sort, searchAfter);
 			searches.put(uid, search);
 			return luceneSearchResult("Datafile", search, searchAfter, maxResults);
-		} catch (Exception e) {
+		} catch (IOException | QueryNodeException e) {
 			logger.error("Error", e);
 			freeSearcher(uid);
-			if (e instanceof LuceneException) {
-				throw (LuceneException) e;
-			}
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -644,12 +655,9 @@ public class Lucene {
 			SearchBucket search = new SearchBucket(this, SearchType.DATASET, request, sort, searchAfter);
 			searches.put(uid, search);
 			return luceneSearchResult("Dataset", search, searchAfter, maxResults);
-		} catch (Exception e) {
+		} catch (IOException | QueryNodeException e) {
 			logger.error("Error", e);
 			freeSearcher(uid);
-			if (e instanceof LuceneException) {
-				throw (LuceneException) e;
-			}
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 
@@ -760,8 +768,7 @@ public class Lucene {
 			gen.writeStartArray(joinedEntityName.toLowerCase());
 			for (ScoreDoc joinedHit : topFieldDocs.scoreDocs) {
 				gen.writeStartObject();
-				int joinedShardIndex = joinedHit.shardIndex > 0 ? joinedHit.shardIndex : 0;
-				Document joinedDocument = searchers.get(joinedShardIndex).doc(joinedHit.doc);
+				Document joinedDocument = searchers.get(joinedHit.shardIndex).doc(joinedHit.doc);
 				joinedDocument.forEach(encodeField(gen, search.joinedFields.get(joinedEntityName)));
 				gen.writeEnd();
 			}
@@ -834,11 +841,9 @@ public class Lucene {
 			SearchBucket search = new SearchBucket(this, SearchType.GENERIC, request, sort, null);
 			searches.put(uid, search);
 			return luceneFacetResult(entityName, search, searchAfter, maxResults, maxLabels);
-		} catch (Exception e) {
+		} catch (IOException | QueryNodeException e) {
+			logger.error("Error", e);
 			freeSearcher(uid);
-			if (e instanceof LuceneException) {
-				throw (LuceneException) e;
-			}
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -940,18 +945,15 @@ public class Lucene {
 
 			icatUnits = new IcatUnits(props.getString("units", ""));
 
-			String shardedIndicesString = props.getString("shardedIndices", "").toLowerCase();
-			shardedIndices = new HashSet<>(Arrays.asList(shardedIndicesString.split("\\s+")));
-
 		} catch (Exception e) {
 			logger.error(fatal, e.getMessage());
 			throw new IllegalStateException(e.getMessage());
 		}
 
 		String format = "Initialised icat.lucene with directory {}, commitSeconds {}, maxShardSize {}, "
-				+ "shardedIndices {}, maxSearchTimeSeconds {}, aggregateFiles {}";
-		logger.info(format, luceneDirectory, luceneCommitMillis, luceneMaxShardSize, shardedIndices,
-				maxSearchTimeSeconds, aggregateFiles);
+				+ "maxSearchTimeSeconds {}, aggregateFiles {}";
+		logger.info(format, luceneDirectory, luceneCommitMillis, luceneMaxShardSize, maxSearchTimeSeconds,
+				aggregateFiles);
 	}
 
 	class CommitTimerTask extends TimerTask {
@@ -989,12 +991,9 @@ public class Lucene {
 			SearchBucket search = new SearchBucket(this, SearchType.INVESTIGATION, request, sort, searchAfter);
 			searches.put(uid, search);
 			return luceneSearchResult("Investigation", search, searchAfter, maxResults);
-		} catch (Exception e) {
+		} catch (IOException | QueryNodeException e) {
 			logger.error("Error", e);
 			freeSearcher(uid);
-			if (e instanceof LuceneException) {
-				throw (LuceneException) e;
-			}
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -1004,43 +1003,70 @@ public class Lucene {
 	 * documents and preventing normal modify operations until the index is
 	 * unlocked.
 	 * 
+	 * A check is also performed against the minId and maxId used for population.
+	 * This ensures that no data is duplicated in the index.
+	 * 
 	 * @param entityName Name of the entity/index to lock.
-	 * @param request    Incoming request. In order to delete all existing
-	 *                   documents, the accompanying Json should specify
-	 *                   <code>{"delete": true}</code>.
-	 * @throws LuceneException If already locked, or if there's an IOException when
-	 *                         deleting documents.
+	 * @param minId      The exclusive minimum ICAT id being populated for. If
+	 *                   Documents already exist with an id greater than this, the
+	 *                   lock will fail. If null, treated as if it were
+	 *                   Long.MIN_VALUE
+	 * @param maxId      The inclusive maximum ICAT id being populated for. If
+	 *                   Documents already exist with an id less than or equal to
+	 *                   this, the lock will fail. If null, treated as if it were
+	 *                   Long.MAX_VALUE
+	 * @param delete     Whether to delete all existing Documents on the index.
+	 * @throws LuceneException If already locked, if there's an IOException when
+	 *                         deleting documents, or if the min/max id values are
+	 *                         provided and Documents already exist in that range.
 	 */
 	@POST
 	@Path("lock/{entityName}")
-	@Consumes(MediaType.APPLICATION_JSON)
-	@Produces(MediaType.APPLICATION_JSON)
-	public String lock(@PathParam("entityName") String entityName, @Context HttpServletRequest request)
-			throws LuceneException {
-		try (JsonReader reader = Json.createReader(request.getInputStream())) {
-			boolean delete = reader.readObject().getBoolean("delete", false);
-			logger.info("Requesting lock of {} index, delete={}", entityName, delete);
-			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
+	public void lock(@PathParam("entityName") String entityName, @QueryParam("minId") Long minId,
+			@QueryParam("maxId") Long maxId, @QueryParam("delete") Boolean delete) throws LuceneException {
+		try {
+			entityName = entityName.toLowerCase();
+			logger.info("Requesting lock of {} index, minId={}, maxId={}, delete={}", entityName, minId, maxId, delete);
+			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> new IndexBucket(k));
 
 			if (!bucket.locked.compareAndSet(false, true)) {
 				String message = "Lucene already locked for " + entityName;
 				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE, message);
 			}
-			JsonObjectBuilder builder = Json.createObjectBuilder();
 			if (delete) {
 				for (ShardBucket shardBucket : bucket.shardList) {
 					shardBucket.indexWriter.deleteAll();
 				}
 				// Reset the shardList so we reset the routing
 				bucket.shardList = Arrays.asList(bucket.shardList.get(0));
-				return builder.add("currentId", 0).build().toString();
+				return;
 			}
-			ShardBucket shardBucket = bucket.routeShard();
-			int docCount = shardBucket.documentCount.intValue();
-			IndexSearcher searcher = shardBucket.searcherManager.acquire();
-			String id = searcher.doc(docCount - 1).get("id");
-			shardBucket.searcherManager.release(searcher);
-			return builder.add("currentId", new Long(id)).build().toString();
+
+			for (ShardBucket shardBucket : bucket.shardList) {
+				IndexSearcher searcher = shardBucket.searcherManager.acquire();
+				Query query;
+				if (minId == null && maxId == null) {
+					query = new MatchAllDocsQuery();
+				} else {
+					if (minId == null) {
+						minId = Long.MIN_VALUE;
+					}
+					if (maxId == null) {
+						maxId = Long.MAX_VALUE;
+					}
+					query = LongPoint.newRangeQuery("id.long", minId + 1, maxId);
+				}
+				TopDocs topDoc = searcher.search(query, 1);
+				if (topDoc.scoreDocs.length != 0) {
+					// If we have any results in the populating range, unlock and throw
+					bucket.locked.compareAndSet(true, false);
+					Document doc = searcher.doc(topDoc.scoreDocs[0].doc);
+					String id = doc.get("id");
+					String message = "While locking index, found id " + id + " in specified range";
+					logger.error(message);
+					throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST, message);
+				}
+			}
 		} catch (IOException e) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
@@ -1209,23 +1235,25 @@ public class Lucene {
 		}
 		logger.debug("{} maxscore {}", totalHits, maxScore);
 		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		int shardIndex = -1;
 		try (JsonGenerator gen = Json.createGenerator(baos)) {
 			gen.writeStartObject();
 			gen.writeStartArray("results");
 			for (ScoreDoc hit : hits) {
-				encodeResult(name, gen, hit, searchers.get(hit.shardIndex), search);
+				shardIndex = hit.shardIndex;
+				encodeResult(name, gen, hit, searchers.get(shardIndex), search);
 			}
 			gen.writeEnd(); // array results
 			if (hits.length == maxResults) {
 				ScoreDoc lastDoc = hits[hits.length - 1];
-				gen.writeStartObject("search_after").write("doc", lastDoc.doc).write("shardIndex",
-						lastDoc.shardIndex);
+				shardIndex = lastDoc.shardIndex;
+				gen.writeStartObject("search_after").write("doc", lastDoc.doc).write("shardIndex", shardIndex);
 				float lastScore = lastDoc.score;
 				if (!Float.isNaN(lastScore)) {
 					gen.write("score", lastScore);
 				}
 				if (fields != null) {
-					Document lastDocument = searchers.get(lastDoc.shardIndex).doc(lastDoc.doc);
+					Document lastDocument = searchers.get(shardIndex).doc(lastDoc.doc);
 					gen.writeStartArray("fields");
 					for (SortField sortField : fields) {
 						String fieldName = sortField.getField();
@@ -1272,6 +1300,10 @@ public class Lucene {
 				gen.writeEnd(); // end "search_after" object
 			}
 			gen.writeEnd(); // end enclosing object
+		} catch (ArrayIndexOutOfBoundsException e) {
+			String message = "Attempting to access searcher with shardIndex " + shardIndex + ", but only have "
+					+ searchers.size() + " searchers in total";
+			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, message);
 		}
 		logger.trace("Json returned {}", baos.toString());
 		return baos.toString();
@@ -1294,51 +1326,37 @@ public class Lucene {
 		TopFieldDocs topFieldDocs;
 		Counter clock = TimeLimitingCollector.getGlobalCounter();
 		TimeLimitingCollector collector = new TimeLimitingCollector(null, clock, maxSearchTimeSeconds * 1000);
-		int shardsSize = shards.size();
 
 		try {
-			if (shardsSize > 1) {
-				List<TopFieldDocs> shardHits = new ArrayList<>();
-				int doc = search.searchAfter != null ? search.searchAfter.doc : -1;
-				for (ShardBucket shard : shards) {
-					// Handle the possibility of some shards having a higher docCount than the doc
-					// id on searchAfter
-					int docCount = shard.documentCount.intValue();
-					if (search.searchAfter != null) {
-						if (doc > docCount) {
-							search.searchAfter.doc = docCount - 1;
-						} else {
-							search.searchAfter.doc = doc;
-						}
+			List<TopFieldDocs> shardHits = new ArrayList<>();
+			int doc = search.searchAfter != null ? search.searchAfter.doc : -1;
+			for (ShardBucket shard : shards) {
+				// Handle the possibility of some shards having a higher docCount than the doc
+				// id on searchAfter
+				int docCount = shard.documentCount.intValue();
+				if (search.searchAfter != null) {
+					if (doc > docCount) {
+						search.searchAfter.doc = docCount - 1;
+					} else {
+						search.searchAfter.doc = doc;
 					}
-
-					// Wrap Collector with TimeLimitingCollector
-					TopFieldCollector topFieldCollector = TopFieldCollector.create(search.sort, maxResults,
-							search.searchAfter, maxResults);
-					collector.setCollector(topFieldCollector);
-
-					IndexSearcher indexSearcher = shard.searcherManager.acquire();
-					indexSearcher.search(search.query, collector);
-					TopFieldDocs topDocs = topFieldCollector.topDocs();
-					if (search.scored) {
-						TopFieldCollector.populateScores(topDocs.scoreDocs, indexSearcher, search.query);
-					}
-					shardHits.add(topDocs);
 				}
-				topFieldDocs = TopFieldDocs.merge(search.sort, 0, maxResults, shardHits.toArray(new TopFieldDocs[0]),
-						true);
-			} else {
-				// Don't need to merge results across shards
+
+				// Wrap Collector with TimeLimitingCollector
 				TopFieldCollector topFieldCollector = TopFieldCollector.create(search.sort, maxResults,
 						search.searchAfter, maxResults);
 				collector.setCollector(topFieldCollector);
-				IndexSearcher indexSearcher = shards.get(0).searcherManager.acquire();
+
+				IndexSearcher indexSearcher = shard.searcherManager.acquire();
 				indexSearcher.search(search.query, collector);
-				topFieldDocs = topFieldCollector.topDocs();
+				TopFieldDocs topDocs = topFieldCollector.topDocs();
 				if (search.scored) {
-					TopFieldCollector.populateScores(topFieldDocs.scoreDocs, indexSearcher, search.query);
+					TopFieldCollector.populateScores(topDocs.scoreDocs, indexSearcher, search.query);
 				}
+				shardHits.add(topDocs);
 			}
+			topFieldDocs = TopFieldDocs.merge(search.sort, 0, maxResults, shardHits.toArray(new TopFieldDocs[0]),
+					true);
 
 			return topFieldDocs;
 
@@ -1487,6 +1505,7 @@ public class Lucene {
 				Long value = new Long(json.getString(key));
 				document.add(new NumericDocValuesField("id.long", value));
 				document.add(new StoredField("id.long", value));
+				document.add(new LongPoint("id.long", value));
 			}
 			if (DocumentMapping.longFields.contains(key)) {
 				document.add(new NumericDocValuesField(key, json.getJsonNumber(key).longValueExact()));
@@ -1515,6 +1534,7 @@ public class Lucene {
 				Long value = new Long(field.stringValue());
 				document.add(new NumericDocValuesField("id.long", value));
 				document.add(new StoredField("id.long", value));
+				document.add(new LongPoint("id.long", value));
 			}
 			if (DocumentMapping.longFields.contains(key)) {
 				document.add(new NumericDocValuesField(key, field.numericValue().longValue()));
