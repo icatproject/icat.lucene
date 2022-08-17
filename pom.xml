@@ -87,6 +87,12 @@
 		</dependency>
 
 		<dependency>
+			<groupId>org.apache.lucene</groupId>
+			<artifactId>lucene-facet</artifactId>
+			<version>${luceneVersion}</version>
+		</dependency>
+
+		<dependency>
 			<groupId>javax</groupId>
 			<artifactId>javaee-api</artifactId>
 			<version>7.0</version>
@@ -95,7 +101,7 @@
 		<dependency>
 			<groupId>org.icatproject</groupId>
 			<artifactId>icat.utils</artifactId>
-			<version>4.16.1</version>
+			<version>4.16.2-SNAPSHOT</version>
 		</dependency>
 
 		<dependency>
@@ -327,6 +333,3 @@
 
 	<description>Exposes lucene calls to an icat server</description>
 </project>
-
-
-
