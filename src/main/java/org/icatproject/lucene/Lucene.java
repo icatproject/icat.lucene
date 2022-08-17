@@ -1038,7 +1038,9 @@ public class Lucene {
 					shardBucket.indexWriter.deleteAll();
 				}
 				// Reset the shardList so we reset the routing
-				bucket.shardList = Arrays.asList(bucket.shardList.get(0));
+				bucket.shardList = new ArrayList<>();
+				ShardBucket shardBucket = bucket.shardList.get(0);
+				bucket.shardList.add(shardBucket);
 				return;
 			}
 
