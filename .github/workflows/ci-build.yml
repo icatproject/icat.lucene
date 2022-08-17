@@ -7,8 +7,8 @@ on:
       - master
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build_and_tests:
+    runs-on: ubuntu-20.04
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
@@ -20,11 +20,25 @@ jobs:
             experimental: true
 
     steps:
-      - uses: actions/checkout@v2
-      - name: Set up JDK
+      - name: Setup Java
         uses: actions/setup-java@v2
         with:
-          java-version: ${{ matrix.version }}
           distribution: 'temurin'
-      - name: Test with Maven
+          java-version: ${{ matrix.version }}
+
+      - name: Cache local Maven repository
+        uses: actions/cache@v2
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Checkout icat-lucene
+        uses: actions/checkout@v2
+
+      - name: Run Build
+        run: mvn install -Dmaven.install.skip -DskipTests
+
+      - name: Run Unit Tests
         run: mvn test -B
