@@ -147,7 +147,7 @@ public class Lucene {
 			} finally {
 				searcherManager.release(indexSearcher);
 			}
-			logger.info("Created ShardBucket for {} with {} Documents", directory, numDocs);
+			logger.info("Created ShardBucket for directory {} with {} Documents", directory.getDirectory(), numDocs);
 		}
 
 		/**
@@ -905,7 +905,7 @@ public class Lucene {
 			throws IOException, LuceneException {
 		List<IndexSearcher> subSearchers = searcherMap.get(name);
 		subSearchers = getSearchers(searcherMap, name);
-		if (subSearchers.size() > 1) {
+		if (subSearchers.size() != 1) {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR,
 					"Cannot get single IndexSearcher for " + name + " as it has " + subSearchers.size() + " shards");
 		}
@@ -1025,9 +1025,8 @@ public class Lucene {
 	public void lock(@PathParam("entityName") String entityName, @QueryParam("minId") Long minId,
 			@QueryParam("maxId") Long maxId, @QueryParam("delete") Boolean delete) throws LuceneException {
 		try {
-			entityName = entityName.toLowerCase();
 			logger.info("Requesting lock of {} index, minId={}, maxId={}, delete={}", entityName, minId, maxId, delete);
-			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName, k -> new IndexBucket(k));
+			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
 
 			if (!bucket.locked.compareAndSet(false, true)) {
 				String message = "Lucene already locked for " + entityName;
@@ -1038,8 +1037,8 @@ public class Lucene {
 					shardBucket.indexWriter.deleteAll();
 				}
 				// Reset the shardList so we reset the routing
-				bucket.shardList = new ArrayList<>();
 				ShardBucket shardBucket = bucket.shardList.get(0);
+				bucket.shardList = new ArrayList<>();
 				bucket.shardList.add(shardBucket);
 				return;
 			}
