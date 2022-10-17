@@ -1,7 +1,5 @@
 package org.icatproject.lucene;
 
-import java.io.IOException;
-import java.text.ParseException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -35,7 +33,7 @@ public class DocumentMapping {
 		}
 	}
 
-	private static Analyzer analyzer;
+	private static Analyzer analyzer  = new IcatSynonymAnalyzer();;
 
 	public static final Set<String> doubleFields = new HashSet<>();
 	public static final Set<String> facetFields = new HashSet<>();
@@ -55,14 +53,6 @@ public class DocumentMapping {
 	public static final StandardQueryParser sampleParser = buildParser("sample.name", "sample.type.name");
 
 	static {
-		try {
-			// Attempt init an Analyzer which injects synonyms for searching
-			analyzer = new IcatSynonymAnalyzer();
-		} catch (IOException | ParseException e) {
-			// If synonym files cannot be parsed, default to using the same analyzer as for writing
-			analyzer = new IcatAnalyzer();
-		}
-
 		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI", "rangeTop", "rangeTopSI", "rangeBottom",
 				"rangeBottomSI"));
 		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name", "stringValue", "technique.name"));

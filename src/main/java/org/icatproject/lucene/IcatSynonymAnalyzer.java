@@ -22,15 +22,21 @@ public class IcatSynonymAnalyzer extends Analyzer {
 
     private SynonymMap synonyms;
 
-    public IcatSynonymAnalyzer() 
-            throws IOException, ParseException {
+    public IcatSynonymAnalyzer() {
         super();
         // Load synonyms from resource file
         InputStream in = IcatSynonymAnalyzer.class.getClassLoader().getResourceAsStream("synonym.txt");
-        BufferedReader reader = new BufferedReader(new InputStreamReader(in));
-        SolrSynonymParser parser = new SolrSynonymParser(true, true, new IcatAnalyzer());
-        parser.parse(reader);
-        synonyms = parser.build();
+        if (in != null) {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(in));
+            SolrSynonymParser parser = new SolrSynonymParser(true, true, new IcatAnalyzer());
+            try {
+                parser.parse(reader);
+                synonyms = parser.build();
+            } catch (IOException | ParseException e) {
+                // If we cannot parse the synonyms, do nothing
+                // To all purposes this will now act as a plain IcatAnalyzer
+            }
+        }
     }
 
 	@Override
@@ -40,7 +46,9 @@ public class IcatSynonymAnalyzer extends Analyzer {
 		sink = new LowerCaseFilter(sink);
 		sink = new StopFilter(sink, IcatAnalyzer.SCIENTIFIC_STOP_WORDS_SET);
 		sink = new PorterStemFilter(sink);
-        sink = new SynonymGraphFilter(sink, synonyms, false);
+        if (synonyms != null) {
+            sink = new SynonymGraphFilter(sink, synonyms, false);
+        }
 		return new TokenStreamComponents(source, sink);
 	}
 }

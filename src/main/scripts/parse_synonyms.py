@@ -1,21 +1,21 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import csv
 import sys
 from typing import Dict, List
 
 
-def addToParents(
+def add_to_parents(
     relationships: Dict[str, Dict[str, List[str]]],
     label: str,
     parents: List[str],
-    childDepth: int
+    child_depth: int
 ):
     """
     Adds the `label` to all the entries in `relationships` that have a key in
     `parents`, then recursively calls itself to add `label` to any
-    grandparents. `childDepth` is decreased by 1 for each generation to prevent
-    exponentially large injections.
+    grandparents. `child_depth` is decreased by 1 for each generation to
+    prevent exponentially large injections.
 
     Parameters
     ----------
@@ -26,73 +26,71 @@ def addToParents(
         The term to be added to its `parents`.
     parents: List[str]
         The direct parents of the current `label`
-    childDepth: int
+    child_depth: int
         The number of generations of children to inject for each term.
         For example, a value of 2 would inject children and their children.
         0 will only add alternative terms. Negative integers will add all
         children, grandchildren, etc. Note that this may result in an
         exponentially large number of terms
     """
-    if childDepth != 0:
+    if child_depth != 0:
         for parent in parents:
             try:
                 relationships[parent]["children"].append(label)
                 # If the parent is equivalent to anything, also add label as a
-                # child of the equivalentParent
-                for equivalentParent in relationships[parent]["equivalent"]:
-                    relationships[equivalentParent]["children"].append(label)
-                addToParents(
+                # child of the equivalent_parent
+                for equivalent_parent in relationships[parent]["equivalent"]:
+                    relationships[equivalent_parent]["children"].append(label)
+                add_to_parents(
                     relationships,
                     label,
                     relationships[parent]["parents"],
-                    childDepth - 1,
+                    child_depth - 1,
                 )
             except KeyError:
                 pass
 
 
-def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
+def main(input_file: str, output_file: str, mode: str, max_child_depth: int):
     """
     Reads an CSV file of terminology and writes it into Solr synonym format
     for use in synonym injection. Alternative terms are always written, and the
-    number of child terms is configurable by `maxChildDepth`.
+    number of child terms is configurable by `max_child_depth`.
 
     Parameters
     ----------
-    inputFile: str
+    input_file: str
         CSV file to read ontology from.
-    outputFile: str
+    output_file: str
         Solr synonym output file.
     mode: str
         Python file mode (w, a, ...) to use when writing the output file.
-    maxChildDepth: int
+    max_child_depth: int
         The maximum number of generations of children to inject for each term.
         For example, a value of 2 would inject children and their children.
         0 will only add alternative terms. Negative integers will add all
         children, grandchildren, etc. Note that this may result in an
         exponentially large number of terms
     """
-    altIndices = []
-    parentIndices = []
-    equivalentIndices = []
-    equivalentPairs = {}
+    alt_indices = []
+    parent_indices = []
+    equivalent_indices = []
+    equivalent_pairs = {}
     relationships = {}
-    with open(inputFile) as f:
+    with open(input_file) as f:
         reader = csv.reader(f)
 
         # Dynamically determine header positions
         headers = next(reader)
         for i, header in enumerate(headers):
             if "Label" == header.strip():
-                labelIndex = i
-            # elif "Class Type" == header:
-            #     classIndex = i
+                label_index = i
             elif "Alt Label" in header.strip():
-                altIndices.append(i)
+                alt_indices.append(i)
             elif "Parent IRI" == header.strip():
-                parentIndices.append(i)
+                parent_indices.append(i)
             elif "Equivalent" == header.strip():
-                equivalentIndices.append(i)
+                equivalent_indices.append(i)
 
         for entries in reader:
             try:
@@ -101,7 +99,7 @@ def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
                 # If we do not have an ID, continue to the next line
                 continue
 
-            label = entries[labelIndex]
+            label = entries[label_index]
             if label in relationships.keys():
                 raise ValueError(f"Duplicate entry for label {label}")
 
@@ -111,26 +109,25 @@ def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
                 "equivalent": [],
                 "children": [],
             }
-            # classType = entries[classIndex]
-            for altIndex in altIndices:
-                alternativeLabel = entries[altIndex]
-                if alternativeLabel != "":
+            for alt_index in alt_indices:
+                alternative_label = entries[alt_index]
+                if alternative_label:
                     relationships[label]["alternatives"].append(
-                        alternativeLabel
+                        alternative_label
                     )
-            for parentIndex in parentIndices:
-                parent = entries[parentIndex]
-                if parent != "":
+            for parent_index in parent_indices:
+                parent = entries[parent_index]
+                if parent:
                     relationships[label]["parents"].append(parent)
-            for equivalentIndex in equivalentIndices:
-                equivalentLabel = entries[equivalentIndex]
-                if equivalentLabel != "":
-                    relationships[label]["equivalent"].append(equivalentLabel)
-                    equivalentPairs[equivalentLabel] = label
+            for equivalent_index in equivalent_indices:
+                equivalent_label = entries[equivalent_index]
+                if equivalent_label:
+                    relationships[label]["equivalent"].append(equivalent_label)
+                    equivalent_pairs[equivalent_label] = label
 
     # If A is equivalent to B, then also set B equivalent to A
     # This ensures they share all children
-    for key, value in equivalentPairs.items():
+    for key, value in equivalent_pairs.items():
         try:
             relationships[key]["equivalent"].append(value)
         except KeyError:
@@ -138,8 +135,8 @@ def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
 
     print(f"{len(relationships)} relationships found")
     for label, relationship in relationships.items():
-        addToParents(
-            relationships, label, relationship["parents"], maxChildDepth
+        add_to_parents(
+            relationships, label, relationship["parents"], max_child_depth
         )
 
     output = ""
@@ -147,41 +144,41 @@ def main(inputFile: str, outputFile: str, mode: str, maxChildDepth: int):
         # Only write to file if we have alternative or child terms
         if (len(relationship["alternatives"]) > 0
                 or len(relationship["children"]) > 0):
-            leftHandSide = ", ".join(
+            left_hand_side = ", ".join(
                 sorted(set([label] + relationship["alternatives"]))
             )
-            rightHandSide = ", ".join(
+            right_hand_side = ", ".join(
                 sorted(set(
                     [label]
                     + relationship["alternatives"]
                     + relationship["children"]
                 ))
             )
-            output += leftHandSide + " => " + rightHandSide + "\n"
+            output += left_hand_side + " => " + right_hand_side + "\n"
 
-    with open(outputFile, mode) as f:
+    with open(output_file, mode) as f:
         f.write(output)
 
 
 if __name__ == "__main__":
     args = sys.argv
     try:
-        inputFile = args[1]
+        input_file = args[1]
     except IndexError as e:
-        raise IndexError("inputFile to parse not provided") from e
+        raise IndexError("input_file to parse not provided") from e
     try:
-        outputFile = args[2]
+        output_file = args[2]
     except IndexError as e:
-        raise IndexError("outputFile to write to not provided") from e
+        raise IndexError("output_file to write to not provided") from e
     try:
         mode = args[3]
     except IndexError:
-        # Default to appending to the outputFile (no overwrite)
+        # Default to appending to the output_file (no overwrite)
         mode = "a"
     try:
-        maxChildDepth = int(args[4])
+        max_child_depth = int(args[4])
     except (IndexError, ValueError):
         # Default to 0 depth (only alternative terms)
-        maxChildDepth = 0
+        max_child_depth = 0
 
-    main(inputFile, outputFile, mode, maxChildDepth)
+    main(input_file, output_file, mode, max_child_depth)
