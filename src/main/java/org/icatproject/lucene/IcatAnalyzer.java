@@ -13,7 +13,6 @@ import org.apache.lucene.analysis.en.EnglishPossessiveFilter;
 import org.apache.lucene.analysis.en.PorterStemFilter;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
 
-
 public class IcatAnalyzer extends Analyzer {
 
 	public static final CharArraySet SCIENTIFIC_STOP_WORDS_SET;

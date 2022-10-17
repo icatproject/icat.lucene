@@ -65,7 +65,7 @@ public class DocumentMapping {
 
 		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI", "rangeTop", "rangeTopSI", "rangeBottom",
 				"rangeBottomSI"));
-		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name", "stringValue"));
+		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name", "stringValue", "technique.name"));
 		longFields.addAll(
 				Arrays.asList("date", "startDate", "endDate", "dateTimeValue", "investigation.startDate", "fileSize",
 						"fileCount"));
@@ -75,11 +75,12 @@ public class DocumentMapping {
 						"numericValueSI", "fileSize", "fileCount"));
 		textFields.addAll(Arrays.asList("name", "visitId", "description", "location", "dataset.name",
 				"investigation.name", "instrument.name", "instrument.fullName", "datafileFormat.name", "sample.name",
-				"sample.type.name", "title", "summary", "facility.name", "user.fullName", "type.name", "doi"));
+				"sample.type.name", "technique.name", "technique.description", "technique.pid", "title", "summary",
+				"facility.name", "user.fullName", "type.name", "doi"));
 
 		indexedEntities.addAll(Arrays.asList("Datafile", "Dataset", "Investigation", "DatafileParameter",
-				"DatasetParameter", "InstrumentScientist", "InvestigationInstrument", "InvestigationParameter",
-				"InvestigationUser", "Sample", "SampleParameter"));
+				"DatasetParameter", "DatasetTechnique", "InstrumentScientist", "InvestigationInstrument",
+				"InvestigationParameter", "InvestigationUser", "Sample", "SampleParameter"));
 
 		relationships.put("Instrument",
 				new ParentRelationship[] { new ParentRelationship("InvestigationInstrument", "instrument.id",
@@ -109,6 +110,9 @@ public class DocumentMapping {
 						new ParentRelationship("DatasetParameter", "type.id", "type.name"),
 						new ParentRelationship("InvestigationParameter", "type.id", "type.name"),
 						new ParentRelationship("SampleParameter", "type.id", "type.name") });
+		relationships.put("Technique",
+				new ParentRelationship[] { new ParentRelationship("DatasetTechnique", "technique.id", "technique.name",
+						"technique.description", "technique.pid") });
 		relationships.put("Investigation",
 				new ParentRelationship[] {
 						new ParentRelationship("Dataset", "investigation.id", "investigation.name",

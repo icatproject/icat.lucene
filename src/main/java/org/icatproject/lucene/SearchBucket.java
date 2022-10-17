@@ -68,9 +68,9 @@ public class SearchBucket {
     public Sort sort;
     public FieldDoc searchAfter;
     public boolean scored;
-    public Set<String> fields = new HashSet<String>();
+    public Set<String> fields = new HashSet<>();
     public Map<String, Set<String>> joinedFields = new HashMap<>();
-    public Map<String, FacetedDimension> dimensions = new HashMap<String, FacetedDimension>();
+    public Map<String, FacetedDimension> dimensions = new HashMap<>();
     private static final SimpleDateFormat df = new SimpleDateFormat("yyyyMMddHHmm");
 
     static {
@@ -100,8 +100,8 @@ public class SearchBucket {
      * @throws IOException
      * @throws QueryNodeException
      */
-    public SearchBucket(Lucene lucene, SearchType searchType, HttpServletRequest request, String sort, String searchAfter)
-            throws LuceneException, IOException, QueryNodeException {
+    public SearchBucket(Lucene lucene, SearchType searchType, HttpServletRequest request, String sort,
+            String searchAfter) throws LuceneException, IOException, QueryNodeException {
         this.lucene = lucene;
         searcherMap = new HashMap<>();
         parseSort(sort);
@@ -248,11 +248,10 @@ public class SearchBucket {
      */
     private void buildDateRanges(Builder queryBuilder, JsonObject queryJson, String lowerKey, String upperKey,
             String... fields) throws LuceneException {
-        Long lower = parseDate(queryJson, lowerKey, 0);
-        Long upper = parseDate(queryJson, upperKey, 59999);
-        if (lower != null || upper != null) {
-            lower = (lower == null) ? Long.MIN_VALUE : lower;
-            upper = (upper == null) ? Long.MAX_VALUE : upper;
+        long lower = parseDate(queryJson, lowerKey, 0);
+        long upper = parseDate(queryJson, upperKey, 59999);
+        // Only build the query if at least one of the dates is defined
+        if (lower != Long.MIN_VALUE || upper != Long.MAX_VALUE) {
             for (String field : fields) {
                 queryBuilder.add(LongPoint.newRangeQuery(field, lower, upper), Occur.MUST);
             }
@@ -281,21 +280,18 @@ public class SearchBucket {
                 String filterTarget = i == -1 ? key : key.substring(0, i);
                 String fld = key.substring(i + 1);
                 Query dimensionQuery;
-                switch (valueType) {
-                    case ARRAY:
-                        Builder builder = new BooleanQuery.Builder();
-                        // If the key was just a nested entity (no ".") then we should FILTER all of our
-                        // queries on that entity.
-                        Occur occur = i == -1 ? Occur.FILTER : Occur.SHOULD;
-                        for (JsonValue arrayValue : filterObject.getJsonArray(key)) {
-                            Query arrayQuery = parseFilter(target, fld, arrayValue);
-                            builder.add(arrayQuery, occur);
-                        }
-                        dimensionQuery = builder.build();
-                        break;
-
-                    default:
-                        dimensionQuery = parseFilter(target, fld, value);
+                if (valueType.equals(ValueType.ARRAY)) {
+                    Builder builder = new BooleanQuery.Builder();
+                    // If the key was just a nested entity (no ".") then we should FILTER all of our
+                    // queries on that entity.
+                    Occur occur = i == -1 ? Occur.FILTER : Occur.SHOULD;
+                    for (JsonValue arrayValue : filterObject.getJsonArray(key)) {
+                        Query arrayQuery = parseFilter(target, fld, arrayValue);
+                        builder.add(arrayQuery, occur);
+                    }
+                    dimensionQuery = builder.build();
+                } else {
+                    dimensionQuery = parseFilter(target, fld, value);
                 }
                 // Nest the dimension query if needed
                 if (i != -1 && !target.equals(filterTarget)) {
@@ -350,7 +346,8 @@ public class SearchBucket {
                     nestedFilters.forEach(nestedFilter -> {
                         String nestedField = nestedFilter.getString("field");
                         if (nestedFilter.containsKey("value")) {
-                            TermQuery query = new TermQuery(new Term(nestedField + ".keyword", nestedFilter.getString("value")));
+                            Term term = new Term(nestedField + ".keyword", nestedFilter.getString("value"));
+                            TermQuery query = new TermQuery(term);
                             nestedBoolBuilder.add(query, Occur.FILTER);
                         } else if (nestedFilter.containsKey("exact")) {
                             buildNestedExactQuery(nestedField, nestedFilter, nestedBoolBuilder);
@@ -363,11 +360,10 @@ public class SearchBucket {
                         return JoinUtil.createJoinQuery("sample.id", false, "sample.id", nestedBoolBuilder.build(),
                                 nestedSearcher, ScoreMode.None);
                     } else if (fld.equals("sampleparameter") && target.equals("investigation")) {
-                        Query sampleQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id", nestedBoolBuilder.build(),
-                                nestedSearcher, ScoreMode.None);
-                        Query investigationQuery = JoinUtil.createJoinQuery("sample.investigation.id", false, "id", sampleQuery,
+                        Query sampleQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id",
+                                nestedBoolBuilder.build(), nestedSearcher, ScoreMode.None);
+                        return JoinUtil.createJoinQuery("sample.investigation.id", false, "id", sampleQuery,
                                 lucene.getSearcher(searcherMap, "sample"), ScoreMode.None);
-                        return investigationQuery;
                     } else {
                         return JoinUtil.createJoinQuery(target + ".id", false, "id", nestedBoolBuilder.build(),
                                 nestedSearcher, ScoreMode.None);
@@ -390,7 +386,8 @@ public class SearchBucket {
     }
 
     /**
-     * Builds an exact numeric query, intended for use with numeric or date/time parameters.
+     * Builds an exact numeric query, intended for use with numeric or date/time
+     * parameters.
      * 
      * @param fld         Name of the field to apply the range to.
      * @param valueObject JsonObject containing "exact", and optionally "units"
@@ -408,17 +405,23 @@ public class SearchBucket {
             String units = valueObject.getString("units", null);
             if (units != null) {
                 SystemValue exactValue = lucene.icatUnits.new SystemValue(exact, units);
-                if (exactValue.value != null ) {
+                if (exactValue.value != null) {
                     // If we were able to parse the units, apply query to the SI value
-                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeTopSI", exactValue.value, Double.POSITIVE_INFINITY), Occur.FILTER);
-                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeBottomSI", Double.NEGATIVE_INFINITY, exactValue.value), Occur.FILTER);
+                    rangeBuilder.add(
+                            DoublePoint.newRangeQuery("rangeTopSI", exactValue.value, Double.POSITIVE_INFINITY),
+                            Occur.FILTER);
+                    rangeBuilder.add(
+                            DoublePoint.newRangeQuery("rangeBottomSI", Double.NEGATIVE_INFINITY, exactValue.value),
+                            Occur.FILTER);
                     exactOrRangeBuilder.add(rangeBuilder.build(), Occur.SHOULD);
                     exactOrRangeBuilder.add(DoublePoint.newExactQuery(fld + "SI", exactValue.value), Occur.SHOULD);
                     builder.add(exactOrRangeBuilder.build(), Occur.FILTER);
                 } else {
                     // If units could not be parsed, make them part of the query on the raw data
-                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeTop", exact, Double.POSITIVE_INFINITY), Occur.FILTER);
-                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeBottom", Double.NEGATIVE_INFINITY, exact), Occur.FILTER);
+                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeTop", exact, Double.POSITIVE_INFINITY),
+                            Occur.FILTER);
+                    rangeBuilder.add(DoublePoint.newRangeQuery("rangeBottom", Double.NEGATIVE_INFINITY, exact),
+                            Occur.FILTER);
                     exactOrRangeBuilder.add(rangeBuilder.build(), Occur.SHOULD);
                     exactOrRangeBuilder.add(DoublePoint.newExactQuery(fld, exact), Occur.SHOULD);
                     builder.add(exactOrRangeBuilder.build(), Occur.FILTER);
@@ -427,7 +430,8 @@ public class SearchBucket {
             } else {
                 // If units were not provided, just apply to the raw data
                 rangeBuilder.add(DoublePoint.newRangeQuery("rangeTop", exact, Double.POSITIVE_INFINITY), Occur.FILTER);
-                rangeBuilder.add(DoublePoint.newRangeQuery("rangeBottom", Double.NEGATIVE_INFINITY, exact), Occur.FILTER);
+                rangeBuilder.add(DoublePoint.newRangeQuery("rangeBottom", Double.NEGATIVE_INFINITY, exact),
+                        Occur.FILTER);
                 exactOrRangeBuilder.add(rangeBuilder.build(), Occur.SHOULD);
                 exactOrRangeBuilder.add(DoublePoint.newExactQuery(fld, exact), Occur.SHOULD);
                 builder.add(exactOrRangeBuilder.build(), Occur.FILTER);
@@ -509,16 +513,12 @@ public class SearchBucket {
      * Converts String into number of ms since epoch.
      * 
      * @param value String representing a Date in the format "yyyyMMddHHmm".
-     * @return Number of ms since epoch, or null if value was null
+     * @return Number of ms since epoch.
      * @throws java.text.ParseException
      */
-    protected static Long decodeTime(String value) throws java.text.ParseException {
-        if (value == null) {
-            return null;
-        } else {
-            synchronized (df) {
-                return df.parse(value).getTime();
-            }
+    protected static long decodeTime(String value) throws java.text.ParseException {
+        synchronized (df) {
+            return df.parse(value).getTime();
         }
     }
 
@@ -551,7 +551,7 @@ public class SearchBucket {
      * @throws LuceneException If the ValueType is not NUMBER or STRING, or if a
      *                         STRING value cannot be parsed.
      */
-    private Long parseDate(JsonObject jsonObject, String key, int offset) throws LuceneException {
+    private long parseDate(JsonObject jsonObject, String key, int offset) throws LuceneException {
         if (jsonObject.containsKey(key)) {
             ValueType valueType = jsonObject.get(key).getValueType();
             switch (valueType) {
@@ -570,7 +570,13 @@ public class SearchBucket {
                             "Dates should be represented by a NUMBER or STRING JsonValue, but got " + valueType);
             }
         }
-        return null;
+        // If the key wasn't present, use eiter MIN_VALUE or MAX_VALUE based on whether
+        // we need to offset the date. This is useful for half open ranges.
+        if (offset == 0) {
+            return Long.MIN_VALUE;
+        } else {
+            return Long.MAX_VALUE;
+        }
     }
 
     /**
@@ -586,7 +592,7 @@ public class SearchBucket {
             for (JsonObject dimensionObject : dimensionObjects) {
                 if (!dimensionObject.containsKey("dimension")) {
                     throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
-                            "'dimension' not specified for facet request " + dimensionObject.toString());
+                            "'dimension' not specified for facet request " + dimensionObject);
                 }
                 String dimension = dimensionObject.getString("dimension");
                 FacetedDimension facetDimensionRequest = new FacetedDimension(dimension);
@@ -595,15 +601,15 @@ public class SearchBucket {
                     List<JsonObject> jsonRanges = dimensionObject.getJsonArray("ranges").getValuesAs(JsonObject.class);
                     if (DocumentMapping.longFields.contains(dimension)) {
                         for (JsonObject range : jsonRanges) {
-                            Long lower = Long.MIN_VALUE;
-                            Long upper = Long.MAX_VALUE;
+                            long lower = Long.MIN_VALUE;
+                            long upper = Long.MAX_VALUE;
                             if (range.containsKey("from")) {
                                 lower = range.getJsonNumber("from").longValueExact();
                             }
                             if (range.containsKey("to")) {
                                 upper = range.getJsonNumber("to").longValueExact();
                             }
-                            String label = lower.toString() + "-" + upper.toString();
+                            String label = lower + "-" + upper;
                             if (range.containsKey("key")) {
                                 label = range.getString("key");
                             }
@@ -611,15 +617,15 @@ public class SearchBucket {
                         }
                     } else if (DocumentMapping.doubleFields.contains(dimension)) {
                         for (JsonObject range : jsonRanges) {
-                            Double lower = Double.MIN_VALUE;
-                            Double upper = Double.MAX_VALUE;
+                            double lower = Double.MIN_VALUE;
+                            double upper = Double.MAX_VALUE;
                             if (range.containsKey("from")) {
                                 lower = range.getJsonNumber("from").doubleValue();
                             }
                             if (range.containsKey("to")) {
                                 upper = range.getJsonNumber("to").doubleValue();
                             }
-                            String label = lower.toString() + "-" + upper.toString();
+                            String label = lower + "-" + upper;
                             if (range.containsKey("key")) {
                                 label = range.getString("key");
                             }
@@ -749,8 +755,8 @@ public class SearchBucket {
         } else if (parameter.containsKey("lowerDateValue") && parameter.containsKey("upperDateValue")) {
             buildDateRanges(paramQuery, parameter, "lowerDateValue", "upperDateValue", "dateTimeValue");
         } else if (parameter.containsKey("lowerNumericValue") && parameter.containsKey("upperNumericValue")) {
-            Double pLowerNumericValue = parameter.getJsonNumber("lowerNumericValue").doubleValue();
-            Double pUpperNumericValue = parameter.getJsonNumber("upperNumericValue").doubleValue();
+            double pLowerNumericValue = parameter.getJsonNumber("lowerNumericValue").doubleValue();
+            double pUpperNumericValue = parameter.getJsonNumber("upperNumericValue").doubleValue();
             paramQuery.add(DoublePoint.newRangeQuery("numericValue", pLowerNumericValue, pUpperNumericValue),
                     Occur.MUST);
         }
@@ -848,7 +854,7 @@ public class SearchBucket {
             List<SortField> fields = new ArrayList<>();
             for (String key : object.keySet()) {
                 String order = object.getString(key);
-                Boolean reverse;
+                boolean reverse;
                 if (order.equals("asc")) {
                     reverse = false;
                 } else if (order.equals("desc")) {
