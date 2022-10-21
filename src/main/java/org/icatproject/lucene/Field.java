@@ -24,9 +24,9 @@ class Field {
 
     private abstract class InnerField {
 
-        public abstract Document addSortable(Document document) throws NumberFormatException;
+        public abstract void addSortable(Document document) throws NumberFormatException;
 
-        public abstract Document addToDocument(Document document) throws NumberFormatException;
+        public abstract void addToDocument(Document document) throws NumberFormatException;
 
     }
 
@@ -39,7 +39,7 @@ class Field {
         }
 
         @Override
-        public Document addSortable(Document document) throws NumberFormatException {
+        public void addSortable(Document document) throws NumberFormatException {
             if (DocumentMapping.sortFields.contains(name)) {
                 if (name.equals("id")) {
                     // Id is a special case, as we need to to be SORTED as a byte ref to allow joins
@@ -51,11 +51,10 @@ class Field {
                 }
                 document.add(new SortedDocValuesField(name, new BytesRef(value)));
             }
-            return document;
         }
 
         @Override
-        public Document addToDocument(Document document) throws NumberFormatException {
+        public void addToDocument(Document document) throws NumberFormatException {
             addSortable(document);
 
             if (DocumentMapping.facetFields.contains(name)) {
@@ -69,7 +68,6 @@ class Field {
                 document.add(new StringField(name, value, Store.YES));
             }
 
-            return document;
         }
 
     }
@@ -83,19 +81,17 @@ class Field {
         }
 
         @Override
-        public Document addSortable(Document document) throws NumberFormatException {
+        public void addSortable(Document document) throws NumberFormatException {
             if (DocumentMapping.sortFields.contains(name)) {
                 document.add(new NumericDocValuesField(name, value));
             }
-            return document;
         }
 
         @Override
-        public Document addToDocument(Document document) throws NumberFormatException {
+        public void addToDocument(Document document) throws NumberFormatException {
             addSortable(document);
             document.add(new LongPoint(name, value));
             document.add(new StoredField(name, value));
-            return document;
         }
 
     }
@@ -109,20 +105,18 @@ class Field {
         }
 
         @Override
-        public Document addSortable(Document document) throws NumberFormatException {
+        public void addSortable(Document document) throws NumberFormatException {
             if (DocumentMapping.sortFields.contains(name)) {
                 long sortableLong = NumericUtils.doubleToSortableLong(value);
                 document.add(new NumericDocValuesField(name, sortableLong));
             }
-            return document;
         }
 
         @Override
-        public Document addToDocument(Document document) throws NumberFormatException {
+        public void addToDocument(Document document) throws NumberFormatException {
             addSortable(document);
             document.add(new DoublePoint(name, value));
             document.add(new StoredField(name, value));
-            return document;
         }
 
     }
@@ -170,11 +164,10 @@ class Field {
      * field.
      * 
      * @param document The document to add to
-     * @return The original document with this field added to it
      * @throws NumberFormatException
      */
-    public Document addSortable(Document document) throws NumberFormatException {
-        return innerField.addSortable(document);
+    public void addSortable(Document document) throws NumberFormatException {
+        innerField.addSortable(document);
     }
 
     /**
@@ -183,11 +176,10 @@ class Field {
      * String, long or double field.
      * 
      * @param document The document to add to
-     * @return The original document with this field added to it
      * @throws NumberFormatException
      */
-    public Document addToDocument(Document document) throws NumberFormatException {
-        return innerField.addToDocument(document);
+    public void addToDocument(Document document) throws NumberFormatException {
+        innerField.addToDocument(document);
     }
 
 }
