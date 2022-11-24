@@ -152,12 +152,11 @@ public class Lucene {
 		 * @throws IOException
 		 */
 		public int commit() throws IOException {
-			int cached = indexWriter.numRamDocs();
-			if (cached > 0) {
+			if (indexWriter.hasUncommittedChanges()) {
 				indexWriter.commit();
 				searcherManager.maybeRefreshBlocking();
 			}
-			return cached;
+			return indexWriter.numRamDocs();
 		}
 	}
 
