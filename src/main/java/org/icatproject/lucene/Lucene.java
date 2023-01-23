@@ -157,18 +157,23 @@ public class Lucene {
 		}
 
 		/**
-		 * Creates a new DefaultSortedSetDocValuesReaderState object for this shard. This can be expensive for indices with a large number of faceted dimensions and labels, so should only be done when needed.
+		 * Creates a new DefaultSortedSetDocValuesReaderState object for this shard.
+		 * This can be expensive for indices with a large number of faceted dimensions
+		 * and labels, so should only be done when needed.
 		 * 
-		 * @param indexSearcher The underlying reader of this searcher is used to build the state
+		 * @param indexSearcher The underlying reader of this searcher is used to build
+		 *                      the state
 		 * @throws IOException
 		 */
 		private void initState(IndexSearcher indexSearcher) throws IOException {
 			try {
 				state = new DefaultSortedSetDocValuesReaderState(indexSearcher.getIndexReader());
 			} catch (IllegalArgumentException e) {
-				// This can occur if no fields in the index have been faceted
+				// This can occur if no fields in the index have been faceted, in which case set
+				// state to null to ensure we don't (erroneously) use the old state
 				logger.error(
 						"No facets found in index, resulting in error: " + e.getClass() + " " + e.getMessage());
+				state = null;
 			} finally {
 				searcherManager.release(indexSearcher);
 			}
@@ -550,25 +555,27 @@ public class Lucene {
 			for (ShardBucket shardBucket : indexBucket.shardList) {
 				shardBucket.commit();
 				IndexSearcher searcher = shardBucket.searcherManager.acquire();
-				Term idTerm = new Term("id", entityId);
-				TopDocs topDocs = searcher.search(new TermQuery(idTerm), 1);
-				if (topDocs.totalHits.value == 1) {
-					int docId = topDocs.scoreDocs[0].doc;
-					Document document = searcher.doc(docId);
+				try {
+					Term idTerm = new Term("id", entityId);
+					TopDocs topDocs = searcher.search(new TermQuery(idTerm), 1);
+					if (topDocs.totalHits.value == 1) {
+						int docId = topDocs.scoreDocs[0].doc;
+						Document document = searcher.doc(docId);
+						Set<String> prunedFields = new HashSet<>();
+						List<IndexableField> fieldsToAdd = new ArrayList<>();
+
+						incrementFileStatistic("fileSize", deltaFileSize, document, prunedFields, fieldsToAdd);
+						incrementFileStatistic("fileCount", deltaFileCount, document, prunedFields, fieldsToAdd);
+
+						Document newDocument = pruneDocument(prunedFields, document);
+						fieldsToAdd.forEach(field -> newDocument.add(field));
+						shardBucket.indexWriter.updateDocument(idTerm, facetsConfig.build(newDocument));
+						shardBucket.commit();
+						break;
+					}
+				} finally {
 					shardBucket.searcherManager.release(searcher);
-					Set<String> prunedFields = new HashSet<>();
-					List<IndexableField> fieldsToAdd = new ArrayList<>();
-
-					incrementFileStatistic("fileSize", deltaFileSize, document, prunedFields, fieldsToAdd);
-					incrementFileStatistic("fileCount", deltaFileCount, document, prunedFields, fieldsToAdd);
-
-					Document newDocument = pruneDocument(prunedFields, document);
-					fieldsToAdd.forEach(field -> newDocument.add(field));
-					shardBucket.indexWriter.updateDocument(idTerm, facetsConfig.build(newDocument));
-					shardBucket.commit();
-					break;
 				}
-				shardBucket.searcherManager.release(searcher);
 			}
 		}
 	}
@@ -687,21 +694,23 @@ public class Lucene {
 				if (aggregateFiles && entityName.equals("Datafile")) {
 					for (ShardBucket shardBucket : bucket.shardList) {
 						IndexSearcher datafileSearcher = shardBucket.searcherManager.acquire();
-						TopDocs topDocs = datafileSearcher.search(new TermQuery(term), 1);
-						if (topDocs.totalHits.value == 1) {
-							int docId = topDocs.scoreDocs[0].doc;
-							Document datasetDocument = datafileSearcher.doc(docId);
-							long sizeToSubtract = datasetDocument.getField("fileSize").numericValue().longValue();
-							if (sizeToSubtract > 0) {
-								String datasetId = datasetDocument.getField("dataset.id").stringValue();
-								String investigationId = datasetDocument.getField("investigation.id").stringValue();
-								aggregateFileSize(0, sizeToSubtract, -1, datasetId, "dataset");
-								aggregateFileSize(0, sizeToSubtract, -1, investigationId, "investigation");
+						try {
+							TopDocs topDocs = datafileSearcher.search(new TermQuery(term), 1);
+							if (topDocs.totalHits.value == 1) {
+								int docId = topDocs.scoreDocs[0].doc;
+								Document datasetDocument = datafileSearcher.doc(docId);
+								long sizeToSubtract = datasetDocument.getField("fileSize").numericValue().longValue();
+								if (sizeToSubtract > 0) {
+									String datasetId = datasetDocument.getField("dataset.id").stringValue();
+									String investigationId = datasetDocument.getField("investigation.id").stringValue();
+									aggregateFileSize(0, sizeToSubtract, -1, datasetId, "dataset");
+									aggregateFileSize(0, sizeToSubtract, -1, investigationId, "investigation");
+								}
+								break;
 							}
+						} finally {
 							shardBucket.searcherManager.release(datafileSearcher);
-							break;
 						}
-						shardBucket.searcherManager.release(datafileSearcher);
 					}
 				}
 				for (ShardBucket shardBucket : bucket.shardList) {
@@ -1036,27 +1045,31 @@ public class Lucene {
 
 			for (ShardBucket shardBucket : bucket.shardList) {
 				IndexSearcher searcher = shardBucket.searcherManager.acquire();
-				Query query;
-				if (minId == null && maxId == null) {
-					query = new MatchAllDocsQuery();
-				} else {
-					if (minId == null) {
-						minId = Long.MIN_VALUE;
+				try {
+					Query query;
+					if (minId == null && maxId == null) {
+						query = new MatchAllDocsQuery();
+					} else {
+						if (minId == null) {
+							minId = Long.MIN_VALUE;
+						}
+						if (maxId == null) {
+							maxId = Long.MAX_VALUE;
+						}
+						query = LongPoint.newRangeQuery("id.long", minId + 1, maxId);
 					}
-					if (maxId == null) {
-						maxId = Long.MAX_VALUE;
+					TopDocs topDoc = searcher.search(query, 1);
+					if (topDoc.scoreDocs.length != 0) {
+						// If we have any results in the populating range, unlock and throw
+						bucket.locked.compareAndSet(true, false);
+						Document doc = searcher.doc(topDoc.scoreDocs[0].doc);
+						String id = doc.get("id");
+						String message = "While locking index, found id " + id + " in specified range";
+						logger.error(message);
+						throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST, message);
 					}
-					query = LongPoint.newRangeQuery("id.long", minId + 1, maxId);
-				}
-				TopDocs topDoc = searcher.search(query, 1);
-				if (topDoc.scoreDocs.length != 0) {
-					// If we have any results in the populating range, unlock and throw
-					bucket.locked.compareAndSet(true, false);
-					Document doc = searcher.doc(topDoc.scoreDocs[0].doc);
-					String id = doc.get("id");
-					String message = "While locking index, found id " + id + " in specified range";
-					logger.error(message);
-					throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST, message);
+				} finally {
+					shardBucket.searcherManager.release(searcher);
 				}
 			}
 		} catch (IOException e) {
@@ -1105,6 +1118,13 @@ public class Lucene {
 					logger.debug("{}", results.totalHits);
 					for (FacetedDimension facetedDimension : search.dimensions.values()) {
 						facetStrings = facetRanges(maxLabels, facetStrings, facetsCollector, facetedDimension);
+					}
+					if (shard.state == null) {
+						logger.debug("State not set, this is most likely due to not having any facetable fields");
+						continue;
+					} else if (shard.state.reader != indexSearcher.getIndexReader()) {
+						logger.warn("Attempted search with outdated state, create new one from current IndexReader");
+						shard.state = new DefaultSortedSetDocValuesReaderState(indexSearcher.getIndexReader());
 					}
 					facetStrings(search, maxLabels, sparse, facetStrings, indexSearcher, facetsCollector, shard.state);
 				} finally {
@@ -1181,10 +1201,6 @@ public class Lucene {
 			IndexSearcher indexSearcher, FacetsCollector facetsCollector, DefaultSortedSetDocValuesReaderState state)
 			throws IOException {
 		try {
-			if (state == null) {
-				logger.debug("State not set, this is most likely due to not having any facetable fields");
-				return;
-			}
 			logger.trace("String faceting");
 			Facets facets = new SortedSetDocValuesFacetCounts(state, facetsCollector);
 			if (sparse) {
@@ -1342,12 +1358,16 @@ public class Lucene {
 				collector.setCollector(topFieldCollector);
 
 				IndexSearcher indexSearcher = shard.searcherManager.acquire();
-				indexSearcher.search(search.query, collector);
-				TopFieldDocs topDocs = topFieldCollector.topDocs();
-				if (search.scored) {
-					TopFieldCollector.populateScores(topDocs.scoreDocs, indexSearcher, search.query);
+				try {
+					indexSearcher.search(search.query, collector);
+					TopFieldDocs topDocs = topFieldCollector.topDocs();
+					if (search.scored) {
+						TopFieldCollector.populateScores(topDocs.scoreDocs, indexSearcher, search.query);
+					}
+					shardHits.add(topDocs);
+				} finally {
+					shard.searcherManager.release(indexSearcher);
 				}
-				shardHits.add(topDocs);
 			}
 			topFieldDocs = TopFieldDocs.merge(search.sort, 0, maxResults, shardHits.toArray(new TopFieldDocs[0]),
 					true);
