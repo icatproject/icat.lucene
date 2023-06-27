@@ -13,14 +13,11 @@
 		<li>The icat lucene server distribution: <a
 			href="${repoUrl}/org/icatproject/icat.lucene/${project.version}/icat.lucene-${project.version}-distro.zip">icat.lucene-${project.version}-distro.zip</a>
 		</li>
-		<li>Java 8</li>
-		<li>A suitable deployed container. The installation scripts
-			support Glassfish/Payara and to a lesser extent WildFly. Testing has
-			been carried out with Payara41 and Glassfish 4.0<a
-			href="https://icatproject.org/installation/glassfish/">Glassfish
-				installation instructions</a> are available.
+		<li>Java 11+</li>
+		<li>A suitable deployed application server that supports JakartaEE 10+. Testing has been carried out with Payara Server Community 6. Other applications servers such as GlassFish and WildFly may work but have not been tested.
+			<a href="https://icatproject.org/installation/glassfish/">Glassfish installation instructions</a> are available.
 		</li>
-		<li>Python (version 2.4 to 2.7)</li>
+		<li>Python 3.6+</li>
 	</ul>
 
 	<h2>The setup.properties file</h2>
