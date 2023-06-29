@@ -87,6 +87,12 @@
 		</dependency>
 
 		<dependency>
+			<groupId>org.apache.lucene</groupId>
+			<artifactId>lucene-backward-codecs</artifactId>
+			<version>${luceneVersion}</version>
+		</dependency>
+
+		<dependency>
 			<groupId>jakarta.platform</groupId>
 			<artifactId>jakarta.jakartaee-api</artifactId>
 			<version>10.0.0</version>
