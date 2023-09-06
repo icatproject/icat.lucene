@@ -120,7 +120,7 @@ public class Lucene {
 		 */
 		public ShardBucket(java.nio.file.Path shardPath) throws IOException {
 			directory = FSDirectory.open(shardPath);
-			IndexWriterConfig config = new IndexWriterConfig(DocumentMapping.analyzer);
+			IndexWriterConfig config = new IndexWriterConfig(analyzer);
 			indexWriter = new IndexWriter(directory, config);
 			String[] files = directory.listAll();
 			if (files.length == 1 && files[0].equals("write.lock")) {
@@ -359,6 +359,7 @@ public class Lucene {
 
 	static final Logger logger = LoggerFactory.getLogger(Lucene.class);
 	private static final Marker fatal = MarkerFactory.getMarker("FATAL");
+	private static final IcatAnalyzer analyzer = new IcatAnalyzer();
 
 	private final FacetsConfig facetsConfig = new FacetsConfig();
 

@@ -6,7 +6,10 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.queryparser.flexible.standard.StandardQueryParser;
+import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfigHandler;
+import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfigHandler.ConfigurationKeys;
 
 public class DocumentMapping {
 
@@ -30,6 +33,8 @@ public class DocumentMapping {
 		}
 	}
 
+	private static Analyzer analyzer  = new IcatSynonymAnalyzer();;
+
 	public static final Set<String> doubleFields = new HashSet<>();
 	public static final Set<String> facetFields = new HashSet<>();
 	public static final Set<String> longFields = new HashSet<>();
@@ -38,12 +43,14 @@ public class DocumentMapping {
 	public static final Set<String> indexedEntities = new HashSet<>();
 	public static final Map<String, ParentRelationship[]> relationships = new HashMap<>();
 
-	public static final IcatAnalyzer analyzer = new IcatAnalyzer();
-	public static final StandardQueryParser genericParser = new StandardQueryParser();
-	public static final StandardQueryParser datafileParser = new StandardQueryParser();
-	public static final StandardQueryParser datasetParser = new StandardQueryParser();
-	public static final StandardQueryParser investigationParser = new StandardQueryParser();
-	public static final StandardQueryParser sampleParser = new StandardQueryParser();
+	public static final StandardQueryParser genericParser = buildParser();
+	public static final StandardQueryParser datafileParser = buildParser("name", "description", "location", "datafileFormat.name", "visitId",
+	"sample.name", "sample.type.name", "doi");
+	public static final StandardQueryParser datasetParser = buildParser("name", "description", "sample.name", "sample.type.name", "type.name",
+	"visitId", "doi");
+	public static final StandardQueryParser investigationParser = buildParser("name", "visitId", "title", "summary", "facility.name",
+	"type.name", "doi");
+	public static final StandardQueryParser sampleParser = buildParser("sample.name", "sample.type.name");
 
 	static {
 		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI", "rangeTop", "rangeTopSI", "rangeBottom",
@@ -103,31 +110,17 @@ public class DocumentMapping {
 						new ParentRelationship("datafile", "investigation.id", "investigation.name", "visitId") });
 		relationships.put("Dataset",
 				new ParentRelationship[] { new ParentRelationship("Datafile", "dataset.id", "dataset.name") });
+	}
 
-		genericParser.setAllowLeadingWildcard(true);
-		genericParser.setAnalyzer(analyzer);
+	private static StandardQueryParser buildParser(String... defaultFields) {
+		StandardQueryParser parser = new StandardQueryParser();
+		StandardQueryConfigHandler qpConf = (StandardQueryConfigHandler) parser.getQueryConfigHandler();
+		qpConf.set(ConfigurationKeys.ANALYZER, analyzer);
+		qpConf.set(ConfigurationKeys.ALLOW_LEADING_WILDCARD, true);
+		if (defaultFields.length > 0) {
+			qpConf.set(ConfigurationKeys.MULTI_FIELDS, defaultFields);
+		}
 
-		CharSequence[] datafileFields = { "name", "description", "location", "datafileFormat.name", "visitId",
-				"sample.name", "sample.type.name", "doi" };
-		datafileParser.setAllowLeadingWildcard(true);
-		datafileParser.setAnalyzer(analyzer);
-		datafileParser.setMultiFields(datafileFields);
-
-		CharSequence[] datasetFields = { "name", "description", "sample.name", "sample.type.name", "type.name",
-				"visitId", "doi" };
-		datasetParser.setAllowLeadingWildcard(true);
-		datasetParser.setAnalyzer(analyzer);
-		datasetParser.setMultiFields(datasetFields);
-
-		CharSequence[] investigationFields = { "name", "visitId", "title", "summary", "facility.name",
-				"type.name", "doi" };
-		investigationParser.setAllowLeadingWildcard(true);
-		investigationParser.setAnalyzer(analyzer);
-		investigationParser.setMultiFields(investigationFields);
-
-		CharSequence[] sampleFields = { "sample.name", "sample.type.name" };
-		sampleParser.setAllowLeadingWildcard(true);
-		sampleParser.setAnalyzer(analyzer);
-		sampleParser.setMultiFields(sampleFields);
+		return parser;
 	}
 }
