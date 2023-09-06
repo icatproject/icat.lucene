@@ -1,6 +1,6 @@
 package org.icatproject.lucene;
 
-import javax.json.JsonObject;
+import jakarta.json.JsonObject;
 
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.DoublePoint;
