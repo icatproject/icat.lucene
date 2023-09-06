@@ -102,4 +102,8 @@ public class FacetedDimension {
 		return dimension;
 	}
 
+	public String toString() {
+		return dimension + ": " + labels + ", " + counts;
+	}
+
 }

@@ -53,17 +53,17 @@ public class DocumentMapping {
 				Arrays.asList("date", "startDate", "endDate", "dateTimeValue", "investigation.startDate", "fileSize",
 						"fileCount"));
 		sortFields.addAll(
-				Arrays.asList("datafile.id", "dataset.id", "investigation.id", "instrument.id", "id", "sample.id",
-						"sample.investigation.id", "date", "name", "stringValue", "dateTimeValue", "numericValue",
-						"numericValueSI", "fileSize", "fileCount"));
+				Arrays.asList("datafile.id", "dataset.id", "facilitycycle.id", "investigation.id", "instrument.id",
+						"id", "sample.id", "sample.investigation.id", "date", "name", "stringValue", "dateTimeValue",
+						"numericValue", "numericValueSI", "fileSize", "fileCount"));
 		textFields.addAll(Arrays.asList("name", "visitId", "description", "location", "dataset.name",
 				"investigation.name", "instrument.name", "instrument.fullName", "datafileFormat.name", "sample.name",
 				"sample.type.name", "technique.name", "technique.description", "technique.pid", "title", "summary",
 				"facility.name", "user.fullName", "type.name", "doi"));
 
 		indexedEntities.addAll(Arrays.asList("Datafile", "Dataset", "Investigation", "DatafileParameter",
-				"DatasetParameter", "DatasetTechnique", "InstrumentScientist", "InvestigationInstrument",
-				"InvestigationParameter", "InvestigationUser", "Sample", "SampleParameter"));
+				"DatasetParameter", "DatasetTechnique", "InstrumentScientist", "InvestigationFacilityCycle",
+				"InvestigationInstrument", "InvestigationParameter", "InvestigationUser", "Sample", "SampleParameter"));
 
 		relationships.put("Instrument",
 				new ParentRelationship[] { new ParentRelationship("InvestigationInstrument", "instrument.id",
