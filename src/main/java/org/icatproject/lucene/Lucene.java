@@ -152,10 +152,11 @@ public class Lucene {
 		 * @throws IOException
 		 */
 		public int commit() throws IOException {
-			int cached = indexWriter.numRamDocs();
-			indexWriter.commit();
-			searcherManager.maybeRefreshBlocking();
-			return cached;
+			if (indexWriter.hasUncommittedChanges()) {
+				indexWriter.commit();
+				searcherManager.maybeRefreshBlocking();
+			}
+			return indexWriter.numRamDocs();
 		}
 	}
 
@@ -344,13 +345,9 @@ public class Lucene {
 	private long luceneMaxShardSize;
 	private long maxSearchTimeSeconds;
 	private boolean aggregateFiles;
-
-	private AtomicLong bucketNum = new AtomicLong();
 	private Map<String, IndexBucket> indexBuckets = new ConcurrentHashMap<>();
-
 	private Timer timer;
 
-	private Map<Long, SearchBucket> searches = new ConcurrentHashMap<>();
 	public IcatUnits icatUnits;
 
 	/**
@@ -440,11 +437,7 @@ public class Lucene {
 		logger.info("Requesting clear");
 
 		exit();
-		timer = new Timer("LuceneCommitTimer");
-
-		bucketNum.set(0);
 		indexBuckets.clear();
-		searches.clear();
 
 		try {
 			Files.walk(luceneDirectory, FileVisitOption.FOLLOW_LINKS).sorted(Comparator.reverseOrder())
@@ -453,7 +446,7 @@ public class Lucene {
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 
-		timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
+		initTimer();
 		logger.info("clear complete - ready to go again");
 
 	}
@@ -464,11 +457,12 @@ public class Lucene {
 	@POST
 	@Path("commit")
 	public void commit() throws LuceneException {
-		logger.debug("Requesting commit");
+		logger.debug("Requesting commit for {} IndexBuckets", indexBuckets.size());
 		try {
 			for (Entry<String, IndexBucket> entry : indexBuckets.entrySet()) {
 				IndexBucket bucket = entry.getValue();
 				if (!bucket.locked.get()) {
+					logger.info("{} is unlocked", entry.getKey());
 					bucket.commit("Synch", entry.getKey());
 				}
 			}
@@ -819,29 +813,27 @@ public class Lucene {
 	public String facet(@PathParam("entityName") String entityName, @Context HttpServletRequest request,
 			@QueryParam("search_after") String searchAfter, @QueryParam("maxResults") int maxResults,
 			@QueryParam("maxLabels") int maxLabels, @QueryParam("sort") String sort) throws LuceneException {
-		Long uid = null;
+		SearchBucket search = null;
 		try {
-			uid = bucketNum.getAndIncrement();
-			SearchBucket search = new SearchBucket(this, SearchType.GENERIC, request, sort, null);
-			searches.put(uid, search);
+			search = new SearchBucket(this, SearchType.GENERIC, request, sort, null);
 			return luceneFacetResult(entityName, search, searchAfter, maxResults, maxLabels);
 		} catch (IOException | QueryNodeException e) {
 			logger.error("Error", e);
-			freeSearcher(uid);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
+		} finally {
+			freeSearcher(search);
 		}
 	}
 
 	/**
 	 * Releases all IndexSearchers associated with uid.
 	 * 
-	 * @param uid Unique Identifier for a set of IndexSearcher to be released.
+	 * @param search SearchBucket to be freed.
 	 * @throws LuceneException
 	 */
-	public void freeSearcher(Long uid) throws LuceneException {
-		if (uid != null && searches.containsKey(uid)) { // May not be set for internal calls
-			Map<String, List<IndexSearcher>> search = searches.get(uid).searcherMap;
-			for (Entry<String, List<IndexSearcher>> entry : search.entrySet()) {
+	public void freeSearcher(SearchBucket search) throws LuceneException {
+		if (search != null) {
+			for (Entry<String, List<IndexSearcher>> entry : search.searcherMap.entrySet()) {
 				String name = entry.getKey();
 				List<IndexSearcher> subReaders = entry.getValue();
 				try {
@@ -851,7 +843,6 @@ public class Lucene {
 					throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 				}
 			}
-			searches.remove(uid);
 		}
 	}
 
@@ -924,8 +915,7 @@ public class Lucene {
 					: 5;
 			aggregateFiles = props.getBoolean("aggregateFiles", false);
 
-			timer = new Timer("LuceneCommitTimer");
-			timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
+			initTimer();
 
 			icatUnits = new IcatUnits(props.getString("units", ""));
 
@@ -938,6 +928,14 @@ public class Lucene {
 				+ "maxSearchTimeSeconds {}, aggregateFiles {}";
 		logger.info(format, luceneDirectory, luceneCommitMillis, luceneMaxShardSize, maxSearchTimeSeconds,
 				aggregateFiles);
+	}
+
+	/**
+	 * Starts a timer and schedules regular commits of the IndexWriter.
+	 */
+	private void initTimer() {
+		timer = new Timer("LuceneCommitTimer");
+		timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
 	}
 
 	class CommitTimerTask extends TimerTask {
@@ -1235,18 +1233,16 @@ public class Lucene {
 	 * @throws LuceneException
 	 */
 	private String searchEntity(HttpServletRequest request, String searchAfter, int maxResults, String sort,
-			SearchType searchType)
-			throws LuceneException {
-		Long uid = null;
+			SearchType searchType) throws LuceneException {
+		SearchBucket search = null;
 		try {
-			uid = bucketNum.getAndIncrement();
-			SearchBucket search = new SearchBucket(this, searchType, request, sort, searchAfter);
-			searches.put(uid, search);
+			search = new SearchBucket(this, searchType, request, sort, searchAfter);
 			return luceneSearchResult(searchType.toString(), search, searchAfter, maxResults);
 		} catch (IOException | QueryNodeException e) {
 			logger.error("Error", e);
-			freeSearcher(uid);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
+		} finally {
+			freeSearcher(search);
 		}
 	}
 
