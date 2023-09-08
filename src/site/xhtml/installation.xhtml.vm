@@ -56,6 +56,11 @@
 		<dd>the interval in seconds between committing lucene changes to
 			disk and updating the index.</dd>
 
+		<dt>maxShardSize</dt>
+		<dd>The maximum number of documents to store in a single index before "sharding"
+			into an additional index. All sharded indices are searched at once when
+			performing a search. Has a maximum value of 2147483648 (max int + 1).</dd>
+
 		<dt>ip</dt>
 		<dd>Ranges of ip addresses to accept requests from. This should
 			be as restrictive as possible - just list the icats you need to
@@ -63,6 +68,20 @@
 			take the form of an IPV4 or IPV6 address followed by the number of
 			bits (starting from the most significant) to consider. For example
 			127.0.0.1/32 is the IPV4 value for localhost.</dd>
+
+		<dt>units</dt>
+		<dd>Recognised unit names/symbols. Each symbol recognised by indriya's
+			SimpleUnitFormat should be followed by a colon, and then a comma separated
+			list of units measuring the same property. If the unit is simply an alias
+			(e.g. "K: kelvin") this is sufficient. If a conversion is required, it
+			should be followed by this factor (e.g. "J: eV 1.602176634e-19"). Different
+			units can be separated by a semi-colon.</dd>
+
+		<dt>aggregateFiles</dt>
+		<dd>Aggregate file sizes/counts for Datasets and Investigations as Datafiles are
+			added or modified (i.e. in real time). This can have a significant
+			performance impact when writing to the index. If "false", icat.server can
+			instead be configured to update sizes at a regular intervals.</dd>
 	</dl>
 
 </body>
