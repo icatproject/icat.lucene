@@ -76,7 +76,6 @@ import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.SortField.Type;
 import org.apache.lucene.search.TimeLimitingCollector.TimeExceededException;
 import org.apache.lucene.search.SortedNumericSortField;
-import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TimeLimitingCollector;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopFieldCollector;
@@ -248,16 +247,27 @@ public class Lucene {
 		}
 
 		/**
-		 * Updates documents matching the term with the provided document.
+		 * Deletes a document from the appropriate shard for this index.
 		 * 
-		 * @param term     Term identifying the old document(s) to be updated.
-		 * @param document The document that will replace the old document(s).
+		 * @param icatId The ICAT id of the document to be deleted.
 		 * @throws IOException
 		 */
-		public void updateDocument(Term term, Document document) throws IOException {
+		public void deleteDocument(long icatId) throws IOException {
 			for (ShardBucket shardBucket : shardList) {
-				shardBucket.indexWriter.updateDocument(term, document);
+				shardBucket.indexWriter.deleteDocuments(LongPoint.newExactQuery("id", icatId));
 			}
+		}
+
+		/**
+		 * Updates the document with the provided ICAT id.
+		 * 
+		 * @param icatId   The ICAT id of the document to be updated.
+		 * @param document The document that will replace the old document.
+		 * @throws IOException
+		 */
+		public void updateDocument(long icatId, Document document) throws IOException {
+			deleteDocument(icatId);
+			addDocument(document);
 		}
 
 		/**
@@ -485,7 +495,7 @@ public class Lucene {
 			for (Entry<String, IndexBucket> entry : indexBuckets.entrySet()) {
 				IndexBucket bucket = entry.getValue();
 				if (!bucket.locked.get()) {
-					logger.info("{} is unlocked", entry.getKey());
+					logger.trace("{} is unlocked", entry.getKey());
 					bucket.commit("Synch", entry.getKey());
 				}
 			}
@@ -523,9 +533,8 @@ public class Lucene {
 			if (aggregateFiles && entityName.equals("Datafile")) {
 				JsonNumber jsonFileSize = documentObject.getJsonNumber("fileSize");
 				if (jsonFileSize != null) {
-					String datasetId = documentObject.getString("dataset.id", null);
-					String investigationId = documentObject.getString("investigation.id", null);
-					logger.trace("Aggregating {} to {}, {}", jsonFileSize.longValue(), datasetId, investigationId);
+					JsonNumber datasetId = documentObject.getJsonNumber("dataset.id");
+					JsonNumber investigationId = documentObject.getJsonNumber("investigation.id");
 					aggregateFileSize(jsonFileSize.longValueExact(), 0, 1, datasetId, "dataset");
 					aggregateFileSize(jsonFileSize.longValueExact(), 0, 1, investigationId, "investigation");
 				}
@@ -543,22 +552,42 @@ public class Lucene {
 	 * @param sizeToSubtract Decreases the fileSize of the entity by this much.
 	 *                       Should be 0 for creates.
 	 * @param deltaFileCount Changes the file count by this much.
-	 * @param entityId       Icat id of entity to update.
+	 * @param entityId       Icat id of entity to update as a JsonNumber.
 	 * @param index          Index (entity) to update.
 	 * @throws IOException
 	 */
-	private void aggregateFileSize(long sizeToAdd, long sizeToSubtract, long deltaFileCount, String entityId,
-			String index)
-			throws IOException {
+	private void aggregateFileSize(long sizeToAdd, long sizeToSubtract, long deltaFileCount, JsonNumber entityId,
+			String index) throws IOException {
+		if (entityId != null) {
+			aggregateFileSize(sizeToAdd, sizeToSubtract, deltaFileCount, entityId.longValueExact(), index);
+		}
+	}
+
+	/**
+	 * Changes the fileSize on an entity by the specified amount. This is used to
+	 * aggregate the individual fileSize of Datafiles up to Dataset and
+	 * Investigation sizes.
+	 * 
+	 * @param sizeToAdd      Increases the fileSize of the entity by this much.
+	 *                       Should be 0 for deletes.
+	 * @param sizeToSubtract Decreases the fileSize of the entity by this much.
+	 *                       Should be 0 for creates.
+	 * @param deltaFileCount Changes the file count by this much.
+	 * @param entityId       Icat id of entity to update as a long.
+	 * @param index          Index (entity) to update.
+	 * @throws IOException
+	 */
+	private void aggregateFileSize(long sizeToAdd, long sizeToSubtract, long deltaFileCount, long entityId,
+			String index) throws IOException {
 		long deltaFileSize = sizeToAdd - sizeToSubtract;
-		if (entityId != null && (deltaFileSize != 0 || deltaFileCount != 0)) {
+		if (deltaFileSize != 0 || deltaFileCount != 0) {
 			IndexBucket indexBucket = indexBuckets.computeIfAbsent(index, k -> new IndexBucket(k));
 			for (ShardBucket shardBucket : indexBucket.shardList) {
 				shardBucket.commit();
 				IndexSearcher searcher = shardBucket.searcherManager.acquire();
 				try {
-					Term idTerm = new Term("id", entityId);
-					TopDocs topDocs = searcher.search(new TermQuery(idTerm), 1);
+					Query idQuery = LongPoint.newExactQuery("id", entityId);
+					TopDocs topDocs = searcher.search(idQuery, 1);
 					if (topDocs.totalHits.value == 1) {
 						int docId = topDocs.scoreDocs[0].doc;
 						Document document = searcher.doc(docId);
@@ -570,7 +599,8 @@ public class Lucene {
 
 						Document newDocument = pruneDocument(prunedFields, document);
 						fieldsToAdd.forEach(field -> newDocument.add(field));
-						shardBucket.indexWriter.updateDocument(idTerm, facetsConfig.build(newDocument));
+						shardBucket.indexWriter.deleteDocuments(idQuery);
+						shardBucket.indexWriter.addDocument(facetsConfig.build(newDocument));
 						shardBucket.commit();
 						break;
 					}
@@ -682,7 +712,7 @@ public class Lucene {
 			updateByRelation(operationBody, true);
 		}
 		if (DocumentMapping.indexedEntities.contains(entityName)) {
-			String icatId = operationBody.getString("_id");
+			long icatId = operationBody.getJsonNumber("_id").longValueExact();
 			try {
 				IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
 				if (bucket.locked.get()) {
@@ -690,20 +720,21 @@ public class Lucene {
 							"Lucene locked for " + entityName);
 				}
 				logger.trace("delete {} {}", entityName, icatId);
+				Query idQuery = LongPoint.newExactQuery("id", icatId);
 				// Special case for filesizes
-				Term term = new Term("id", icatId);
 				if (aggregateFiles && entityName.equals("Datafile")) {
 					for (ShardBucket shardBucket : bucket.shardList) {
 						IndexSearcher datafileSearcher = shardBucket.searcherManager.acquire();
 						try {
-							TopDocs topDocs = datafileSearcher.search(new TermQuery(term), 1);
+							TopDocs topDocs = datafileSearcher.search(idQuery, 1);
 							if (topDocs.totalHits.value == 1) {
 								int docId = topDocs.scoreDocs[0].doc;
 								Document datasetDocument = datafileSearcher.doc(docId);
 								long sizeToSubtract = datasetDocument.getField("fileSize").numericValue().longValue();
 								if (sizeToSubtract > 0) {
-									String datasetId = datasetDocument.getField("dataset.id").stringValue();
-									String investigationId = datasetDocument.getField("investigation.id").stringValue();
+									long datasetId = datasetDocument.getField("dataset.id").numericValue().longValue();
+									long investigationId = datasetDocument.getField("investigation.id").numericValue()
+											.longValue();
 									aggregateFileSize(0, sizeToSubtract, -1, datasetId, "dataset");
 									aggregateFileSize(0, sizeToSubtract, -1, investigationId, "investigation");
 								}
@@ -715,7 +746,7 @@ public class Lucene {
 					}
 				}
 				for (ShardBucket shardBucket : bucket.shardList) {
-					shardBucket.indexWriter.deleteDocuments(term);
+					shardBucket.indexWriter.deleteDocuments(idQuery);
 				}
 			} catch (IOException e) {
 				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
@@ -755,20 +786,20 @@ public class Lucene {
 			List<ShardBucket> shards = getShards(joinedEntityName);
 			SearchBucket joinedSearch = new SearchBucket(this);
 			String fld;
-			String parentId;
+			long parentId;
 			if (joinedEntityName.toLowerCase().contains("investigation")) {
 				fld = "investigation.id";
 				if (entityName.equalsIgnoreCase("investigation")) {
-					parentId = document.get("id");
+					parentId = document.getField("id").numericValue().longValue();
 				} else {
-					parentId = document.get("investigation.id");
+					parentId = document.getField("investigation.id").numericValue().longValue();
 				}
 			} else {
 				fld = entityName.toLowerCase() + ".id";
-				parentId = document.get("id");
+				parentId = document.getField("id").numericValue().longValue();
 			}
-			joinedSearch.query = new TermQuery(new Term(fld, parentId));
-			joinedSearch.sort = new Sort(new SortedNumericSortField("id.long", Type.LONG));
+			joinedSearch.query = LongPoint.newExactQuery(fld, parentId);
+			joinedSearch.sort = new Sort(new SortedNumericSortField("id", Type.LONG));
 			TopFieldDocs topFieldDocs = searchShards(joinedSearch, 100, shards);
 			gen.writeStartArray(joinedEntityName.toLowerCase());
 			for (ScoreDoc joinedHit : topFieldDocs.scoreDocs) {
@@ -939,7 +970,7 @@ public class Lucene {
 			}
 
 			luceneCommitMillis = props.getPositiveInt("commitSeconds") * 1000;
-			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), new Long(Integer.MAX_VALUE + 1));
+			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), Long.valueOf(Integer.MAX_VALUE + 1));
 			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds")
 					: 5;
 			aggregateFiles = props.getBoolean("aggregateFiles", false);
@@ -1057,14 +1088,14 @@ public class Lucene {
 						if (maxId == null) {
 							maxId = Long.MAX_VALUE;
 						}
-						query = LongPoint.newRangeQuery("id.long", minId + 1, maxId);
+						query = LongPoint.newRangeQuery("id", minId + 1, maxId);
 					}
 					TopDocs topDoc = searcher.search(query, 1);
 					if (topDoc.scoreDocs.length != 0) {
 						// If we have any results in the populating range, unlock and throw
 						bucket.locked.compareAndSet(true, false);
 						Document doc = searcher.doc(topDoc.scoreDocs[0].doc);
-						String id = doc.get("id");
+						long id = doc.getField("id").numericValue().longValue();
 						String message = "While locking index, found id " + id + " in specified range";
 						logger.error(message);
 						throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST, message);
@@ -1469,14 +1500,14 @@ public class Lucene {
 				if (indexableField.numericValue() != null) {
 					gen.write(indexableField.numericValue().longValue());
 				} else if (indexableField.stringValue() != null) {
-					gen.write(new Long(indexableField.stringValue()));
+					gen.write(Long.valueOf(indexableField.stringValue()));
 				}
 				break;
 			case DOUBLE:
 				if (indexableField.numericValue() != null) {
 					gen.write(indexableField.numericValue().doubleValue());
 				} else if (indexableField.stringValue() != null) {
-					gen.write(new Double(indexableField.stringValue()));
+					gen.write(Double.valueOf(indexableField.stringValue()));
 				}
 				break;
 			case STRING:
@@ -1511,15 +1542,18 @@ public class Lucene {
 	 * @param json     A JsonObject representing the Document to be built
 	 * @param document The new Document being built
 	 * @param key      A key present in json
+	 * @retrun Whether a conversion has been performed or not
 	 */
-	private void convertUnits(JsonObject json, Document document, String key) {
+	private boolean convertUnits(JsonObject json, Document document, String key) {
 		// Whenever the units are set or changed, convert to SI
 		if (key.equals("type.units")) {
 			String unitString = json.getString("type.units");
 			convertValue(document, json, unitString, "numericValue");
 			convertValue(document, json, unitString, "rangeTop");
 			convertValue(document, json, unitString, "rangeBottom");
+			return true;
 		}
+		return false;
 	}
 
 	/**
@@ -1566,19 +1600,27 @@ public class Lucene {
 	 * @param oldDocument Lucene Document to be updated.
 	 * @return Lucene Document with updated fields.
 	 */
-	private Document updateDocument(JsonObject json, Document oldDocument) {
+	private Document updateDocumentFields(JsonObject json, Document oldDocument) {
 		Document newDocument = new Document();
+		List<Field> fieldsSI = new ArrayList<>();
+		boolean hasNewUnits = false;
 		for (IndexableField field : oldDocument.getFields()) {
 			String fieldName = field.name();
 			if (json.containsKey(fieldName)) {
 				Field jsonField = new Field(json, fieldName);
 				jsonField.addToDocument(newDocument);
-				convertUnits(json, newDocument, fieldName);
+				hasNewUnits = hasNewUnits || convertUnits(json, newDocument, fieldName);
+			} else if (fieldName.endsWith("SI")) {
+				fieldsSI.add(new Field(field));
 			} else {
-				Field sortField = new Field(field);
-				sortField.addSortable(newDocument);
-				newDocument.add(field);
+				Field oldField = new Field(field);
+				oldField.addToDocument(newDocument);
 			}
+		}
+		if (!hasNewUnits) {
+			fieldsSI.forEach((field) -> {
+				field.addToDocument(newDocument);
+			});
 		}
 		return newDocument;
 	}
@@ -1644,7 +1686,7 @@ public class Lucene {
 			updateByRelation(operationBody, false);
 		}
 		if (DocumentMapping.indexedEntities.contains(entityName)) {
-			String icatId = operationBody.getString("_id");
+			long icatId = operationBody.getJsonNumber("_id").longValueExact();
 			JsonObject documentObject = operationBody.getJsonObject("doc");
 			Document document = parseDocument(documentObject);
 			IndexBucket bucket = indexBuckets.computeIfAbsent(entityName.toLowerCase(), k -> new IndexBucket(k));
@@ -1659,15 +1701,15 @@ public class Lucene {
 					long sizeToSubtract = 0;
 					List<IndexSearcher> datafileSearchers = bucket.acquireSearchers();
 					for (IndexSearcher datafileSearcher : datafileSearchers) {
-						TopDocs topDocs = datafileSearcher.search(new TermQuery(new Term("id", icatId)), 1);
+						TopDocs topDocs = datafileSearcher.search(LongPoint.newExactQuery("id", icatId), 1);
 						if (topDocs.totalHits.value == 1) {
 							int docId = topDocs.scoreDocs[0].doc;
 							Document datasetDocument = datafileSearcher.doc(docId);
 							sizeToSubtract = datasetDocument.getField("fileSize").numericValue().longValue();
 							long sizeToAdd = jsonFileSize.longValueExact();
 							if (sizeToAdd != sizeToSubtract) {
-								String datasetId = documentObject.getString("dataset.id", null);
-								String investigationId = documentObject.getString("investigation.id", null);
+								JsonNumber datasetId = documentObject.getJsonNumber("dataset.id");
+								JsonNumber investigationId = documentObject.getJsonNumber("investigation.id");
 								aggregateFileSize(sizeToAdd, sizeToSubtract, 0, datasetId, "dataset");
 								aggregateFileSize(sizeToAdd, sizeToSubtract, 0, investigationId, "investigation");
 							}
@@ -1677,7 +1719,7 @@ public class Lucene {
 				}
 			}
 			logger.trace("update: {}", document);
-			bucket.updateDocument(new Term("id", icatId), facetsConfig.build(document));
+			bucket.updateDocument(icatId, facetsConfig.build(document));
 		}
 	}
 
@@ -1700,7 +1742,7 @@ public class Lucene {
 			throws LuceneException, NumberFormatException, IOException {
 		for (DocumentMapping.ParentRelationship parentRelationship : DocumentMapping.relationships
 				.get(operationBody.getString("_index"))) {
-			String childId = operationBody.getString("_id");
+			long childId = operationBody.getJsonNumber("_id").longValueExact();
 			IndexBucket bucket = indexBuckets.computeIfAbsent(parentRelationship.parentName.toLowerCase(),
 					k -> new IndexBucket(k));
 			if (bucket.locked.get()) {
@@ -1710,18 +1752,17 @@ public class Lucene {
 			IndexSearcher searcher = getSearcher(new HashMap<>(), parentRelationship.parentName);
 
 			int blockSize = 10000;
-			TermQuery query = new TermQuery(new Term(parentRelationship.joiningField, childId));
-			Sort sort = new Sort(new SortField("id", Type.STRING));
+			Query query = LongPoint.newExactQuery(parentRelationship.joiningField, childId);
+			Sort sort = new Sort(new SortField("id", Type.LONG));
 			ScoreDoc[] scoreDocs = searcher.search(query, blockSize, sort).scoreDocs;
 			while (scoreDocs.length != 0) {
-				TopDocs topDocs = searcher.search(query, blockSize);
-				for (ScoreDoc scoreDoc : topDocs.scoreDocs) {
+				for (ScoreDoc scoreDoc : scoreDocs) {
 					Document oldDocument = searcher.doc(scoreDoc.doc);
-					String parentId = oldDocument.get("id");
+					long parentId = oldDocument.getField("id").numericValue().longValue();
 					Document newDocument = delete ? pruneDocument(parentRelationship.fields, oldDocument)
-							: updateDocument(operationBody.getJsonObject("doc"), oldDocument);
+							: updateDocumentFields(operationBody.getJsonObject("doc"), oldDocument);
 					logger.trace("updateByRelation: {}", newDocument);
-					bucket.updateDocument(new Term("id", parentId), facetsConfig.build(newDocument));
+					bucket.updateDocument(parentId, facetsConfig.build(newDocument));
 				}
 				scoreDocs = searcher.searchAfter(scoreDocs[scoreDocs.length - 1], query, blockSize, sort).scoreDocs;
 			}

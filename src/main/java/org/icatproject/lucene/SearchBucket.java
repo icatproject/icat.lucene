@@ -85,6 +85,7 @@ public class SearchBucket {
      */
     public SearchBucket(Lucene lucene) {
         this.lucene = lucene;
+        searcherMap = new HashMap<>();
     }
 
     /**
@@ -110,122 +111,137 @@ public class SearchBucket {
             parseFields(o);
             parseDimensions(o);
             JsonObject jsonQuery = o.getJsonObject("query");
-            BooleanQuery.Builder luceneQuery = new BooleanQuery.Builder();
-            String userName;
-            String text;
             switch (searchType) {
                 case GENERIC:
-                    parseGenericQuery(jsonQuery, luceneQuery);
+                    parseGenericQuery(jsonQuery);
                     return;
                 case DATAFILE:
-                    parseSearchAfter(searchAfter);
-                    buildFilterQueries("datafile", jsonQuery, luceneQuery);
-
-                    userName = jsonQuery.getString("user", null);
-                    if (userName != null) {
-                        buildUserNameQuery(userName, luceneQuery, "investigation.id");
-                    }
-
-                    text = jsonQuery.getString("text", null);
-                    if (text != null) {
-                        luceneQuery.add(DocumentMapping.datafileParser.parse(text, null), Occur.MUST);
-                    }
-
-                    buildDateRanges(luceneQuery, jsonQuery, "lower", "upper", "date");
-
-                    if (jsonQuery.containsKey("parameters")) {
-                        JsonArray parameters = jsonQuery.getJsonArray("parameters");
-                        IndexSearcher datafileParameterSearcher = lucene.getSearcher(searcherMap, "DatafileParameter");
-                        for (JsonValue p : parameters) {
-                            BooleanQuery.Builder paramQuery = parseParameter(p);
-                            Query toQuery = JoinUtil.createJoinQuery("datafile.id", false, "id", paramQuery.build(),
-                                    datafileParameterSearcher, ScoreMode.None);
-                            luceneQuery.add(toQuery, Occur.MUST);
-                        }
-                    }
-                    query = maybeEmptyQuery(luceneQuery);
+                    parseDatafileQuery(searchAfter, jsonQuery);
                     return;
                 case DATASET:
-                    parseSearchAfter(searchAfter);
-                    buildFilterQueries("dataset", jsonQuery, luceneQuery);
-
-                    userName = jsonQuery.getString("user", null);
-                    if (userName != null) {
-                        buildUserNameQuery(userName, luceneQuery, "investigation.id");
-                    }
-
-                    text = jsonQuery.getString("text", null);
-                    if (text != null) {
-                        luceneQuery.add(DocumentMapping.datasetParser.parse(text, null), Occur.MUST);
-                    }
-
-                    buildDateRanges(luceneQuery, jsonQuery, "lower", "upper", "startDate", "endDate");
-
-                    if (jsonQuery.containsKey("parameters")) {
-                        JsonArray parameters = jsonQuery.getJsonArray("parameters");
-                        IndexSearcher parameterSearcher = lucene.getSearcher(searcherMap, "DatasetParameter");
-                        for (JsonValue p : parameters) {
-                            BooleanQuery.Builder paramQuery = parseParameter(p);
-                            Query toQuery = JoinUtil.createJoinQuery("dataset.id", false, "id", paramQuery.build(),
-                                    parameterSearcher, ScoreMode.None);
-                            luceneQuery.add(toQuery, Occur.MUST);
-                        }
-                    }
-                    query = maybeEmptyQuery(luceneQuery);
+                    parseDatasetQuery(searchAfter, jsonQuery);
                     return;
                 case INVESTIGATION:
-                    parseSearchAfter(searchAfter);
-                    buildFilterQueries("investigation", jsonQuery, luceneQuery);
-
-                    userName = jsonQuery.getString("user", null);
-                    if (userName != null) {
-                        buildUserNameQuery(userName, luceneQuery, "id");
-                    }
-
-                    text = jsonQuery.getString("text", null);
-                    if (text != null) {
-                        Builder textBuilder = new BooleanQuery.Builder();
-                        textBuilder.add(DocumentMapping.investigationParser.parse(text, null), Occur.SHOULD);
-
-                        IndexSearcher sampleSearcher = lucene.getSearcher(searcherMap, "Sample");
-                        Query joinedSampleQuery = JoinUtil.createJoinQuery("sample.investigation.id", false, "id",
-                                DocumentMapping.sampleParser.parse(text, null), sampleSearcher, ScoreMode.Avg);
-                        textBuilder.add(joinedSampleQuery, Occur.SHOULD);
-                        luceneQuery.add(textBuilder.build(), Occur.MUST);
-                    }
-
-                    buildDateRanges(luceneQuery, jsonQuery, "lower", "upper", "startDate", "endDate");
-
-                    if (jsonQuery.containsKey("parameters")) {
-                        JsonArray parameters = jsonQuery.getJsonArray("parameters");
-                        IndexSearcher parameterSearcher = lucene.getSearcher(searcherMap, "InvestigationParameter");
-                        for (JsonValue p : parameters) {
-                            BooleanQuery.Builder paramQuery = parseParameter(p);
-                            Query toQuery = JoinUtil.createJoinQuery("investigation.id", false, "id",
-                                    paramQuery.build(),
-                                    parameterSearcher, ScoreMode.None);
-                            luceneQuery.add(toQuery, Occur.MUST);
-                        }
-                    }
-
-                    String userFullName = jsonQuery.getString("userFullName", null);
-                    if (userFullName != null) {
-                        BooleanQuery.Builder userFullNameQuery = new BooleanQuery.Builder();
-                        userFullNameQuery.add(DocumentMapping.genericParser.parse(userFullName, "user.fullName"),
-                                Occur.MUST);
-                        IndexSearcher investigationUserSearcher = lucene.getSearcher(searcherMap, "InvestigationUser");
-                        Query toQuery = JoinUtil.createJoinQuery("investigation.id", false, "id",
-                                userFullNameQuery.build(),
-                                investigationUserSearcher, ScoreMode.None);
-                        luceneQuery.add(toQuery, Occur.MUST);
-                    }
-                    query = maybeEmptyQuery(luceneQuery);
+                    parseInvestigationQuery(searchAfter, jsonQuery);
                     return;
             }
         } catch (QueryNodeParseException e) {
             String message = "Search term could not be parsed due to syntax errors";
             throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST, message);
         }
+    }
+
+    private void parseDatafileQuery(String searchAfter, JsonObject jsonQuery)
+            throws LuceneException, IOException, QueryNodeException {
+        BooleanQuery.Builder luceneQuery = new BooleanQuery.Builder();
+        parseSearchAfter(searchAfter);
+        buildFilterQueries("datafile", jsonQuery, luceneQuery);
+
+        String userName = jsonQuery.getString("user", null);
+        if (userName != null) {
+            buildUserNameQuery(userName, luceneQuery, "investigation.id");
+        }
+
+        String text = jsonQuery.getString("text", null);
+        if (text != null) {
+            luceneQuery.add(DocumentMapping.datafileParser.parse(text, null), Occur.MUST);
+        }
+
+        buildDateRanges(luceneQuery, jsonQuery, "lower", "upper", "date");
+
+        if (jsonQuery.containsKey("parameters")) {
+            JsonArray parameters = jsonQuery.getJsonArray("parameters");
+            IndexSearcher datafileParameterSearcher = lucene.getSearcher(searcherMap, "DatafileParameter");
+            for (JsonValue p : parameters) {
+                BooleanQuery.Builder paramQuery = parseParameter(p);
+                Query toQuery = JoinUtil.createJoinQuery("datafile.id", false, "id", Long.class, paramQuery.build(),
+                        datafileParameterSearcher, ScoreMode.None);
+                luceneQuery.add(toQuery, Occur.MUST);
+            }
+        }
+        query = maybeEmptyQuery(luceneQuery);
+    }
+
+    private void parseDatasetQuery(String searchAfter, JsonObject jsonQuery)
+            throws LuceneException, IOException, QueryNodeException {
+        BooleanQuery.Builder luceneQuery = new BooleanQuery.Builder();
+        parseSearchAfter(searchAfter);
+        buildFilterQueries("dataset", jsonQuery, luceneQuery);
+
+        String userName = jsonQuery.getString("user", null);
+        if (userName != null) {
+            buildUserNameQuery(userName, luceneQuery, "investigation.id");
+        }
+
+        String text = jsonQuery.getString("text", null);
+        if (text != null) {
+            luceneQuery.add(DocumentMapping.datasetParser.parse(text, null), Occur.MUST);
+        }
+
+        buildDateRanges(luceneQuery, jsonQuery, "lower", "upper", "startDate", "endDate");
+
+        if (jsonQuery.containsKey("parameters")) {
+            JsonArray parameters = jsonQuery.getJsonArray("parameters");
+            IndexSearcher parameterSearcher = lucene.getSearcher(searcherMap, "DatasetParameter");
+            for (JsonValue p : parameters) {
+                BooleanQuery.Builder paramQuery = parseParameter(p);
+                Query toQuery = JoinUtil.createJoinQuery("dataset.id", false, "id", Long.class, paramQuery.build(),
+                        parameterSearcher, ScoreMode.None);
+                luceneQuery.add(toQuery, Occur.MUST);
+            }
+        }
+        query = maybeEmptyQuery(luceneQuery);
+    }
+
+    private void parseInvestigationQuery(String searchAfter, JsonObject jsonQuery)
+            throws LuceneException, IOException, QueryNodeException {
+        BooleanQuery.Builder luceneQuery = new BooleanQuery.Builder();
+        parseSearchAfter(searchAfter);
+        buildFilterQueries("investigation", jsonQuery, luceneQuery);
+
+        String userName = jsonQuery.getString("user", null);
+        if (userName != null) {
+            buildUserNameQuery(userName, luceneQuery, "id");
+        }
+
+        String text = jsonQuery.getString("text", null);
+        if (text != null) {
+            Builder textBuilder = new BooleanQuery.Builder();
+            textBuilder.add(DocumentMapping.investigationParser.parse(text, null), Occur.SHOULD);
+
+            IndexSearcher sampleSearcher = lucene.getSearcher(searcherMap, "Sample");
+            Query joinedSampleQuery = JoinUtil.createJoinQuery("sample.investigation.id", false, "id", Long.class,
+                    DocumentMapping.sampleParser.parse(text, null), sampleSearcher, ScoreMode.Avg);
+            textBuilder.add(joinedSampleQuery, Occur.SHOULD);
+            luceneQuery.add(textBuilder.build(), Occur.MUST);
+        }
+
+        buildDateRanges(luceneQuery, jsonQuery, "lower", "upper", "startDate", "endDate");
+
+        if (jsonQuery.containsKey("parameters")) {
+            JsonArray parameters = jsonQuery.getJsonArray("parameters");
+            IndexSearcher parameterSearcher = lucene.getSearcher(searcherMap, "InvestigationParameter");
+            for (JsonValue p : parameters) {
+                BooleanQuery.Builder paramQuery = parseParameter(p);
+                Query toQuery = JoinUtil.createJoinQuery("investigation.id", false, "id", Long.class,
+                        paramQuery.build(),
+                        parameterSearcher, ScoreMode.None);
+                luceneQuery.add(toQuery, Occur.MUST);
+            }
+        }
+
+        String userFullName = jsonQuery.getString("userFullName", null);
+        if (userFullName != null) {
+            BooleanQuery.Builder userFullNameQuery = new BooleanQuery.Builder();
+            userFullNameQuery.add(DocumentMapping.genericParser.parse(userFullName, "user.fullName"),
+                    Occur.MUST);
+            IndexSearcher investigationUserSearcher = lucene.getSearcher(searcherMap, "InvestigationUser");
+            Query toQuery = JoinUtil.createJoinQuery("investigation.id", false, "id", Long.class,
+                    userFullNameQuery.build(),
+                    investigationUserSearcher, ScoreMode.None);
+            luceneQuery.add(toQuery, Occur.MUST);
+        }
+        query = maybeEmptyQuery(luceneQuery);
     }
 
     /**
@@ -301,10 +317,10 @@ public class SearchBucket {
                     IndexSearcher nestedSearcher = lucene.getSearcher(searcherMap, filterTarget);
                     Query nestedQuery;
                     if (filterTarget.equals("sample") && !target.equals("investigation")) {
-                        nestedQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id", dimensionQuery,
-                                nestedSearcher, ScoreMode.None);
+                        nestedQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id", Long.class,
+                                dimensionQuery, nestedSearcher, ScoreMode.None);
                     } else {
-                        nestedQuery = JoinUtil.createJoinQuery(target + ".id", false, "id", dimensionQuery,
+                        nestedQuery = JoinUtil.createJoinQuery(target + ".id", false, "id", Long.class, dimensionQuery,
                                 nestedSearcher, ScoreMode.None);
                     }
                     queryBuilder.add(nestedQuery, Occur.FILTER);
@@ -357,16 +373,16 @@ public class SearchBucket {
                     });
                     if (fld.contains("sample") && !target.equals("investigation")) {
                         // Datasets and Datafiles join by sample.id on both fields
-                        return JoinUtil.createJoinQuery("sample.id", false, "sample.id", nestedBoolBuilder.build(),
-                                nestedSearcher, ScoreMode.None);
-                    } else if (fld.equals("sampleparameter") && target.equals("investigation")) {
-                        Query sampleQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id",
+                        return JoinUtil.createJoinQuery("sample.id", false, "sample.id", Long.class,
                                 nestedBoolBuilder.build(), nestedSearcher, ScoreMode.None);
-                        return JoinUtil.createJoinQuery("sample.investigation.id", false, "id", sampleQuery,
+                    } else if (fld.equals("sampleparameter") && target.equals("investigation")) {
+                        Query sampleQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id", Long.class,
+                                nestedBoolBuilder.build(), nestedSearcher, ScoreMode.None);
+                        return JoinUtil.createJoinQuery("sample.investigation.id", false, "id", Long.class, sampleQuery,
                                 lucene.getSearcher(searcherMap, "sample"), ScoreMode.None);
                     } else {
-                        return JoinUtil.createJoinQuery(target + ".id", false, "id", nestedBoolBuilder.build(),
-                                nestedSearcher, ScoreMode.None);
+                        return JoinUtil.createJoinQuery(target + ".id", false, "id", Long.class,
+                                nestedBoolBuilder.build(), nestedSearcher, ScoreMode.None);
                     }
                 } else {
                     // Single range of values for a field
@@ -498,11 +514,11 @@ public class SearchBucket {
     private void buildUserNameQuery(String userName, BooleanQuery.Builder luceneQuery, String toField)
             throws IOException, LuceneException {
         TermQuery fromQuery = new TermQuery(new Term("user.name", userName));
-        Query investigationUserQuery = JoinUtil.createJoinQuery("investigation.id", false, toField, fromQuery,
-                lucene.getSearcher(searcherMap, "InvestigationUser"), ScoreMode.None);
-        Query instrumentScientistQuery = JoinUtil.createJoinQuery("instrument.id", false, "instrument.id", fromQuery,
-                lucene.getSearcher(searcherMap, "InstrumentScientist"), ScoreMode.None);
-        Query investigationInstrumentQuery = JoinUtil.createJoinQuery("investigation.id", false, toField,
+        Query investigationUserQuery = JoinUtil.createJoinQuery("investigation.id", false, toField, Long.class,
+                fromQuery, lucene.getSearcher(searcherMap, "InvestigationUser"), ScoreMode.None);
+        Query instrumentScientistQuery = JoinUtil.createJoinQuery("instrument.id", false, "instrument.id", Long.class,
+                fromQuery, lucene.getSearcher(searcherMap, "InstrumentScientist"), ScoreMode.None);
+        Query investigationInstrumentQuery = JoinUtil.createJoinQuery("investigation.id", false, toField, Long.class,
                 instrumentScientistQuery, lucene.getSearcher(searcherMap, "InvestigationInstrument"), ScoreMode.None);
         Builder userNameQueryBuilder = new BooleanQuery.Builder();
         userNameQueryBuilder.add(investigationUserQuery, Occur.SHOULD).add(investigationInstrumentQuery, Occur.SHOULD);
@@ -684,7 +700,8 @@ public class SearchBucket {
      * @throws LuceneException If the types of the JsonValues in the query do not
      *                         match those supported by icat.lucene
      */
-    private void parseGenericQuery(JsonObject jsonQuery, BooleanQuery.Builder luceneQuery) throws LuceneException {
+    private void parseGenericQuery(JsonObject jsonQuery) throws LuceneException {
+        BooleanQuery.Builder luceneQuery = new BooleanQuery.Builder();
         for (Entry<String, JsonValue> entry : jsonQuery.entrySet()) {
             String field = entry.getKey();
             ValueType valueType = entry.getValue().getValueType();
@@ -707,19 +724,26 @@ public class SearchBucket {
                     }
                     break;
                 case ARRAY:
-                    // Only support array of String as list of ICAT ids is currently only use case
+                    Query arrayQuery;
                     JsonArray arrayValue = (JsonArray) entry.getValue();
-                    ArrayList<BytesRef> bytesArray = new ArrayList<>();
-                    String valueAsString;
-                    for (JsonValue value : arrayValue) {
-                        if (value.getValueType().equals(ValueType.STRING)) {
-                            valueAsString = ((JsonString) value).getString();
-                        } else {
-                            valueAsString = value.toString();
-                        }
-                        bytesArray.add(new BytesRef(valueAsString));
+                    ValueType arrayValueType = arrayValue.get(0).getValueType();
+                    switch (arrayValueType) {
+                        case NUMBER:
+                            ArrayList<Long> longList = new ArrayList<>();
+                            for (JsonValue value : arrayValue) {
+                                longList.add(((JsonNumber) value).longValueExact());
+                            }
+                            arrayQuery = LongPoint.newSetQuery(field, longList);
+                            break;
+                        default:
+                            ArrayList<BytesRef> bytesRefList = new ArrayList<>();
+                            for (JsonValue value : arrayValue) {
+                                bytesRefList.add(new BytesRef(((JsonString) value).getString()));
+                            }
+                            arrayQuery = new TermInSetQuery(field, bytesRefList);
+                            break;
                     }
-                    luceneQuery.add(new TermInSetQuery(field, bytesArray), Occur.MUST);
+                    luceneQuery.add(arrayQuery, Occur.MUST);
                     break;
                 default:
                     throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,
@@ -846,7 +870,7 @@ public class SearchBucket {
     public void parseSort(String sortString) throws LuceneException {
         if (sortString == null || sortString.equals("") || sortString.equals("{}")) {
             scored = true;
-            sort = new Sort(SortField.FIELD_SCORE, new SortedNumericSortField("id.long", Type.LONG));
+            sort = new Sort(SortField.FIELD_SCORE, new SortedNumericSortField("id", Type.LONG));
             return;
         }
         try (JsonReader reader = Json.createReader(new ByteArrayInputStream(sortString.getBytes()))) {
@@ -872,7 +896,7 @@ public class SearchBucket {
                     fields.add(new SortField(key, Type.STRING, reverse));
                 }
             }
-            fields.add(new SortedNumericSortField("id.long", Type.LONG));
+            fields.add(new SortedNumericSortField("id", Type.LONG));
             scored = false;
             sort = new Sort(fields.toArray(new SortField[0]));
         }

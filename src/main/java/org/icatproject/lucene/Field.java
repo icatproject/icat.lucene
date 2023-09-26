@@ -41,14 +41,6 @@ class Field {
         @Override
         public void addSortable(Document document) throws NumberFormatException {
             if (DocumentMapping.sortFields.contains(name)) {
-                if (name.equals("id")) {
-                    // Id is a special case, as we need to to be SORTED as a byte ref to allow joins
-                    // but also SORTED_NUMERIC to ensure a deterministic order to results
-                    Long longValue = new Long(value);
-                    document.add(new NumericDocValuesField("id.long", longValue));
-                    document.add(new StoredField("id.long", longValue));
-                    document.add(new LongPoint("id.long", longValue));
-                }
                 document.add(new SortedDocValuesField(name, new BytesRef(value)));
             }
         }

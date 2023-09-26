@@ -33,7 +33,7 @@ public class DocumentMapping {
 		}
 	}
 
-	private static Analyzer analyzer  = new IcatSynonymAnalyzer();;
+	private static Analyzer analyzer = new IcatSynonymAnalyzer();;
 
 	public static final Set<String> doubleFields = new HashSet<>();
 	public static final Set<String> facetFields = new HashSet<>();
@@ -44,12 +44,12 @@ public class DocumentMapping {
 	public static final Map<String, ParentRelationship[]> relationships = new HashMap<>();
 
 	public static final StandardQueryParser genericParser = buildParser();
-	public static final StandardQueryParser datafileParser = buildParser("name", "description", "location", "datafileFormat.name", "visitId",
-	"sample.name", "sample.type.name", "doi");
-	public static final StandardQueryParser datasetParser = buildParser("name", "description", "sample.name", "sample.type.name", "type.name",
-	"visitId", "doi");
-	public static final StandardQueryParser investigationParser = buildParser("name", "visitId", "title", "summary", "facility.name",
-	"type.name", "doi");
+	public static final StandardQueryParser datafileParser = buildParser("name", "description", "location",
+			"datafileFormat.name", "visitId", "sample.name", "sample.type.name", "doi");
+	public static final StandardQueryParser datasetParser = buildParser("name", "description", "sample.name",
+			"sample.type.name", "type.name", "visitId", "doi");
+	public static final StandardQueryParser investigationParser = buildParser("name", "visitId", "title", "summary",
+			"facility.name", "type.name", "doi");
 	public static final StandardQueryParser sampleParser = buildParser("sample.name", "sample.type.name");
 
 	static {
@@ -58,10 +58,13 @@ public class DocumentMapping {
 		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name", "stringValue", "technique.name"));
 		longFields.addAll(
 				Arrays.asList("date", "startDate", "endDate", "dateTimeValue", "investigation.startDate", "fileSize",
-						"fileCount"));
+						"fileCount", "datafile.id", "datafileFormat.id", "dataset.id", "facility.id",
+						"facilityCycle.id", "investigation.id", "instrument.id", "id", "sample.id",
+						"sample.investigation.id", "sample.type.id", "technique.id", "type.id", "user.id"));
 		sortFields.addAll(
-				Arrays.asList("datafile.id", "dataset.id", "facilitycycle.id", "investigation.id", "instrument.id",
-						"id", "sample.id", "sample.investigation.id", "date", "name", "stringValue", "dateTimeValue",
+				Arrays.asList("datafile.id", "datafileFormat.id", "dataset.id", "facility.id", "facilityCycle.id",
+						"investigation.id", "instrument.id", "id", "sample.id", "sample.investigation.id",
+						"technique.id", "type.id", "user.id", "date", "name", "stringValue", "dateTimeValue",
 						"numericValue", "numericValueSI", "fileSize", "fileCount"));
 		textFields.addAll(Arrays.asList("name", "visitId", "description", "location", "dataset.name",
 				"investigation.name", "instrument.name", "instrument.fullName", "datafileFormat.name", "sample.name",
