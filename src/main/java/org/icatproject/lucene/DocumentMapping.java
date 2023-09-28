@@ -36,7 +36,6 @@ public class DocumentMapping {
 	private static Analyzer analyzer = new IcatSynonymAnalyzer();;
 
 	public static final Set<String> doubleFields = new HashSet<>();
-	public static final Set<String> facetFields = new HashSet<>();
 	public static final Set<String> longFields = new HashSet<>();
 	public static final Set<String> sortFields = new HashSet<>();
 	public static final Set<String> textFields = new HashSet<>();
@@ -55,7 +54,6 @@ public class DocumentMapping {
 	static {
 		doubleFields.addAll(Arrays.asList("numericValue", "numericValueSI", "rangeTop", "rangeTopSI", "rangeBottom",
 				"rangeBottomSI"));
-		facetFields.addAll(Arrays.asList("type.name", "datafileFormat.name", "stringValue", "technique.name"));
 		longFields.addAll(
 				Arrays.asList("date", "startDate", "endDate", "dateTimeValue", "investigation.startDate", "fileSize",
 						"fileCount", "datafile.id", "datafileFormat.id", "dataset.id", "facility.id",

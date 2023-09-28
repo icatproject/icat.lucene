@@ -2,6 +2,8 @@ package org.icatproject.lucene;
 
 import jakarta.json.JsonObject;
 
+import java.util.List;
+
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.DoublePoint;
 import org.apache.lucene.document.LongPoint;
@@ -49,7 +51,7 @@ class Field {
         public void addToDocument(Document document) throws NumberFormatException {
             addSortable(document);
 
-            if (DocumentMapping.facetFields.contains(name)) {
+            if (facetable) {
                 document.add(new SortedSetDocValuesFacetField(name + ".keyword", value));
                 document.add(new StringField(name + ".keyword", value, Store.NO));
             }
@@ -115,15 +117,18 @@ class Field {
 
     private String name;
     private InnerField innerField;
+    private boolean facetable;
 
     /**
      * Creates a wrapper for a Field.
      * 
      * @param object JsonObject containing representations of multiple fields
      * @param key    Key of a specific field in object
+     * @param facetFields List of String field names which should be stored as a facetable keyword
      */
-    public Field(JsonObject object, String key) {
+    public Field(JsonObject object, String key, List<String> facetFields) {
         name = key;
+        facetable = facetFields.contains(name);
         if (DocumentMapping.doubleFields.contains(name)) {
             innerField = new InnerDoubleField(object.getJsonNumber(name).doubleValue());
         } else if (DocumentMapping.longFields.contains(name)) {
@@ -137,9 +142,11 @@ class Field {
      * Creates a wrapper for a Field.
      * 
      * @param indexableField A Lucene IndexableField
+     * @param facetFields List of String fields which should be stored as a facetable keyword
      */
-    public Field(IndexableField indexableField) {
+    public Field(IndexableField indexableField, List<String> facetFields) {
         name = indexableField.name();
+        facetable = facetFields.contains(name);
         if (DocumentMapping.doubleFields.contains(name)) {
             innerField = new InnerDoubleField(indexableField.numericValue().doubleValue());
         } else if (DocumentMapping.longFields.contains(name)) {

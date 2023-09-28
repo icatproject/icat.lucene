@@ -37,6 +37,7 @@ import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
@@ -708,7 +709,7 @@ public class SearchBucket {
             switch (valueType) {
                 case STRING:
                     JsonString stringValue = (JsonString) entry.getValue();
-                    String fld = DocumentMapping.facetFields.contains(field) ? field + ".keyword" : field;
+                    String fld = lucene.facetFields.contains(field) ? field + ".keyword" : field;
                     luceneQuery.add(new TermQuery(new Term(fld, stringValue.getString())), Occur.MUST);
                     break;
                 case NUMBER:
@@ -724,26 +725,31 @@ public class SearchBucket {
                     }
                     break;
                 case ARRAY:
-                    Query arrayQuery;
+                    ArrayList<Long> longList = new ArrayList<>();
+                    ArrayList<BytesRef> bytesRefList = new ArrayList<>();
                     JsonArray arrayValue = (JsonArray) entry.getValue();
-                    ValueType arrayValueType = arrayValue.get(0).getValueType();
-                    switch (arrayValueType) {
-                        case NUMBER:
-                            ArrayList<Long> longList = new ArrayList<>();
-                            for (JsonValue value : arrayValue) {
+                    for (JsonValue value : arrayValue) {
+                        ValueType arrayValueType = value.getValueType();
+                        switch (arrayValueType) {
+                            case NUMBER:
                                 longList.add(((JsonNumber) value).longValueExact());
-                            }
-                            arrayQuery = LongPoint.newSetQuery(field, longList);
-                            break;
-                        default:
-                            ArrayList<BytesRef> bytesRefList = new ArrayList<>();
-                            for (JsonValue value : arrayValue) {
+                                break;
+                            default:
                                 bytesRefList.add(new BytesRef(((JsonString) value).getString()));
-                            }
-                            arrayQuery = new TermInSetQuery(field, bytesRefList);
-                            break;
+                                break;
+                        }
                     }
-                    luceneQuery.add(arrayQuery, Occur.MUST);
+
+                    if (longList.size() == 0 && bytesRefList.size() == 0) {
+                        query = new MatchNoDocsQuery("Tried filtering" + field + " with an empty array");
+                        return;
+                    }
+                    if (longList.size() != 0) {
+                        luceneQuery.add(LongPoint.newSetQuery(field, longList), Occur.MUST);
+                    }
+                    if (bytesRefList.size() != 0) {
+                        luceneQuery.add(new TermInSetQuery(field, bytesRefList), Occur.MUST);
+                    }
                     break;
                 default:
                     throw new LuceneException(HttpURLConnection.HTTP_BAD_REQUEST,

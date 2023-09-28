@@ -77,6 +77,15 @@
 			should be followed by this factor (e.g. "J: eV 1.602176634e-19"). Different
 			units can be separated by a semi-colon.</dd>
 
+		<dt>facetFields</dt>
+		<dd>The names of fields which should be stored as facetable. The names should
+			correspond to how the field appears in the Lucene index, which may be
+			different to how it is represented in the ICAT database due to flattening of
+			one to one relationships between entities. Accurate field names can be taken
+			from `getDoc` function(s) in icat.server. Note that in order to be available
+			at search time, the field must have been specified when indexing the
+			documents.</dd>
+
 		<dt>aggregateFiles</dt>
 		<dd>Aggregate file sizes/counts for Datasets and Investigations as Datafiles are
 			added or modified (i.e. in real time). This can have a significant

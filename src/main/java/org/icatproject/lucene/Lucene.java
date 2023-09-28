@@ -381,6 +381,7 @@ public class Lucene {
 	private Map<String, IndexBucket> indexBuckets = new ConcurrentHashMap<>();
 	private Timer timer;
 
+	public List<String> facetFields = new ArrayList<>();
 	public IcatUnits icatUnits;
 
 	/**
@@ -979,6 +980,10 @@ public class Lucene {
 
 			icatUnits = new IcatUnits(props.getString("units", ""));
 
+			String facetFieldsString = props.getString("facetFields", "");
+			for (String facetField : facetFieldsString.split("\\s+")) {
+				facetFields.add(facetField);
+			}
 		} catch (Exception e) {
 			logger.error(fatal, e.getMessage());
 			throw new IllegalStateException(e.getMessage());
@@ -1528,7 +1533,7 @@ public class Lucene {
 	private Document parseDocument(JsonObject json) {
 		Document document = new Document();
 		for (String key : json.keySet()) {
-			Field field = new Field(json, key);
+			Field field = new Field(json, key, facetFields);
 			field.addToDocument(document);
 			convertUnits(json, document, key);
 		}
@@ -1607,13 +1612,13 @@ public class Lucene {
 		for (IndexableField field : oldDocument.getFields()) {
 			String fieldName = field.name();
 			if (json.containsKey(fieldName)) {
-				Field jsonField = new Field(json, fieldName);
+				Field jsonField = new Field(json, fieldName, facetFields);
 				jsonField.addToDocument(newDocument);
 				hasNewUnits = hasNewUnits || convertUnits(json, newDocument, fieldName);
 			} else if (fieldName.endsWith("SI")) {
-				fieldsSI.add(new Field(field));
+				fieldsSI.add(new Field(field, facetFields));
 			} else {
-				Field oldField = new Field(field);
+				Field oldField = new Field(field, facetFields);
 				oldField.addToDocument(newDocument);
 			}
 		}
@@ -1638,7 +1643,7 @@ public class Lucene {
 		Document newDocument = new Document();
 		for (IndexableField field : oldDocument.getFields()) {
 			if (!fields.contains(field.name())) {
-				Field fieldToAdd = new Field(field);
+				Field fieldToAdd = new Field(field, facetFields);
 				fieldToAdd.addToDocument(newDocument);
 			}
 		}
