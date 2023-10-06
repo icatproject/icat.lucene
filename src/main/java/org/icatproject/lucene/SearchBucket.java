@@ -320,6 +320,9 @@ public class SearchBucket {
                     if (filterTarget.equals("sample") && !target.equals("investigation")) {
                         nestedQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id", Long.class,
                                 dimensionQuery, nestedSearcher, ScoreMode.None);
+                    } else if (filterTarget.toLowerCase().equals("investigationinstrument") && !target.equals("investigation")) {
+                        nestedQuery = JoinUtil.createJoinQuery("investigation.id", false, "investigation.id", Long.class, dimensionQuery,
+                                nestedSearcher, ScoreMode.None);
                     } else {
                         nestedQuery = JoinUtil.createJoinQuery(target + ".id", false, "id", Long.class, dimensionQuery,
                                 nestedSearcher, ScoreMode.None);
