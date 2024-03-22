@@ -52,7 +52,7 @@ import org.apache.lucene.search.join.JoinUtil;
 import org.apache.lucene.search.join.ScoreMode;
 import org.apache.lucene.util.BytesRef;
 import org.icatproject.lucene.exceptions.LuceneException;
-import org.icatproject.utils.IcatUnits.SystemValue;
+import org.icatproject.utils.IcatUnits.Value;
 
 /**
  * Bucket for information relating to a single search.
@@ -424,17 +424,18 @@ public class SearchBucket {
             double exact = valueObject.getJsonNumber("exact").doubleValue();
             String units = valueObject.getString("units", null);
             if (units != null) {
-                SystemValue exactValue = lucene.icatUnits.new SystemValue(exact, units);
-                if (exactValue.value != null) {
+                Value exactValue = lucene.icatUnits.convertValueToSiUnits(exact, units);
+                if (exactValue != null) {
                     // If we were able to parse the units, apply query to the SI value
-                    rangeBuilder.add(
-                            DoublePoint.newRangeQuery("rangeTopSI", exactValue.value, Double.POSITIVE_INFINITY),
-                            Occur.FILTER);
-                    rangeBuilder.add(
-                            DoublePoint.newRangeQuery("rangeBottomSI", Double.NEGATIVE_INFINITY, exactValue.value),
-                            Occur.FILTER);
+                    Query topQuery = DoublePoint.newRangeQuery("rangeTopSI", exactValue.numericalValue,
+                            Double.POSITIVE_INFINITY);
+                    Query bottomQuery = DoublePoint.newRangeQuery("rangeBottomSI", Double.NEGATIVE_INFINITY,
+                            exactValue.numericalValue);
+                    Query exactQuery = DoublePoint.newExactQuery(fld + "SI", exactValue.numericalValue);
+                    rangeBuilder.add(topQuery, Occur.FILTER);
+                    rangeBuilder.add(bottomQuery, Occur.FILTER);
                     exactOrRangeBuilder.add(rangeBuilder.build(), Occur.SHOULD);
-                    exactOrRangeBuilder.add(DoublePoint.newExactQuery(fld + "SI", exactValue.value), Occur.SHOULD);
+                    exactOrRangeBuilder.add(exactQuery, Occur.SHOULD);
                     builder.add(exactOrRangeBuilder.build(), Occur.FILTER);
                 } else {
                     // If units could not be parsed, make them part of the query on the raw data
@@ -487,11 +488,13 @@ public class SearchBucket {
             double to = valueObject.getJsonNumber("to").doubleValue();
             String units = valueObject.getString("units", null);
             if (units != null) {
-                SystemValue fromValue = lucene.icatUnits.new SystemValue(from, units);
-                SystemValue toValue = lucene.icatUnits.new SystemValue(to, units);
-                if (fromValue.value != null && toValue.value != null) {
+                Value fromValue = lucene.icatUnits.convertValueToSiUnits(from, units);
+                Value toValue = lucene.icatUnits.convertValueToSiUnits(to, units);
+                if (fromValue != null && toValue != null) {
                     // If we were able to parse the units, apply query to the SI value
-                    builder.add(DoublePoint.newRangeQuery(fld + "SI", fromValue.value, toValue.value), Occur.FILTER);
+                    Query rangeQuery = DoublePoint.newRangeQuery(fld + "SI", fromValue.numericalValue,
+                            toValue.numericalValue);
+                    builder.add(rangeQuery, Occur.FILTER);
                 } else {
                     // If units could not be parsed, make them part of the query on the raw data
                     builder.add(DoublePoint.newRangeQuery(fld, from, to), Occur.FILTER);

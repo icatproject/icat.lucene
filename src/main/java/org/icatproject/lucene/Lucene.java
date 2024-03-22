@@ -88,7 +88,7 @@ import org.icatproject.lucene.SearchBucket.SearchType;
 import org.icatproject.lucene.exceptions.LuceneException;
 import org.icatproject.utils.CheckedProperties;
 import org.icatproject.utils.IcatUnits;
-import org.icatproject.utils.IcatUnits.SystemValue;
+import org.icatproject.utils.IcatUnits.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.Marker;
@@ -1573,24 +1573,22 @@ public class Lucene {
 	 */
 	private void convertValue(Document document, JsonObject json, String unitString, String numericFieldName) {
 		IndexableField field = document.getField(numericFieldName);
-		double value;
+		double numericalValue;
 		if (field != null) {
-			value = NumericUtils.sortableLongToDouble(field.numericValue().longValue());
+			numericalValue = NumericUtils.sortableLongToDouble(field.numericValue().longValue());
 		} else if (json.containsKey(numericFieldName)) {
-			value = json.getJsonNumber(numericFieldName).doubleValue();
+			numericalValue = json.getJsonNumber(numericFieldName).doubleValue();
 		} else {
 			// If we aren't dealing with the desired numeric field don't convert
 			return;
 		}
-		logger.trace("Attempting to convert {} {}", value, unitString);
-		SystemValue systemValue = icatUnits.new SystemValue(value, unitString);
-		if (systemValue.units != null) {
-			document.add(new StringField("type.unitsSI", systemValue.units, Store.YES));
-		}
-		if (systemValue.value != null) {
-			document.add(new DoublePoint(numericFieldName + "SI", systemValue.value));
-			document.add(new StoredField(numericFieldName + "SI", systemValue.value));
-			long sortableLong = NumericUtils.doubleToSortableLong(systemValue.value);
+		logger.trace("Attempting to convert {} {}", numericalValue, unitString);
+		Value value = icatUnits.convertValueToSiUnits(numericalValue, unitString);
+		if (value != null) {
+			document.add(new StringField("type.unitsSI", value.units, Store.YES));
+			document.add(new DoublePoint(numericFieldName + "SI", value.numericalValue));
+			document.add(new StoredField(numericFieldName + "SI", value.numericalValue));
+			long sortableLong = NumericUtils.doubleToSortableLong(value.numericalValue);
 			document.add(new NumericDocValuesField(numericFieldName + "SI", sortableLong));
 		}
 	}
