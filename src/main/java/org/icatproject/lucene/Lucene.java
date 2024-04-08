@@ -962,6 +962,8 @@ public class Lucene {
 	private void init() {
 		logger.info("Initialising icat.lucene");
 		CheckedProperties props = new CheckedProperties();
+		String unitsString;
+		int commitSeconds;
 		try {
 			props.loadFromResource("run.properties");
 
@@ -970,7 +972,8 @@ public class Lucene {
 				throw new Exception(luceneDirectory + " is not a directory");
 			}
 
-			luceneCommitMillis = props.getPositiveInt("commitSeconds") * 1000;
+			commitSeconds = props.getPositiveInt("commitSeconds");
+			luceneCommitMillis = commitSeconds * 1000;
 			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), Long.valueOf(Integer.MAX_VALUE + 1));
 			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds")
 					: 5;
@@ -978,7 +981,8 @@ public class Lucene {
 
 			initTimer();
 
-			icatUnits = new IcatUnits(props.getString("units", ""));
+			unitsString = props.getString("units", "");
+			icatUnits = new IcatUnits(unitsString);
 
 			String facetFieldsString = props.getString("facetFields", "");
 			for (String facetField : facetFieldsString.split("\\s+")) {
@@ -990,9 +994,9 @@ public class Lucene {
 		}
 
 		String format = "Initialised icat.lucene with directory {}, commitSeconds {}, maxShardSize {}, "
-				+ "maxSearchTimeSeconds {}, aggregateFiles {}";
-		logger.info(format, luceneDirectory, luceneCommitMillis, luceneMaxShardSize, maxSearchTimeSeconds,
-				aggregateFiles);
+				+ "maxSearchTimeSeconds {}, aggregateFiles {}, units {}, facetFields {}";
+		logger.info(format, luceneDirectory, commitSeconds, luceneMaxShardSize, maxSearchTimeSeconds,
+				aggregateFiles, unitsString, facetFields);
 	}
 
 	/**
