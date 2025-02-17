@@ -974,7 +974,7 @@ public class Lucene {
 
 			commitSeconds = props.getPositiveInt("commitSeconds");
 			luceneCommitMillis = commitSeconds * 1000;
-			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), Long.valueOf(Integer.MAX_VALUE + 1));
+			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), Long.valueOf(Integer.MAX_VALUE - 128));
 			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds")
 					: 5;
 			aggregateFiles = props.getBoolean("aggregateFiles", false);

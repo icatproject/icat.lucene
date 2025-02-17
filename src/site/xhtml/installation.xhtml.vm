@@ -59,7 +59,7 @@
 		<dt>maxShardSize</dt>
 		<dd>The maximum number of documents to store in a single index before "sharding"
 			into an additional index. All sharded indices are searched at once when
-			performing a search. Has a maximum value of 2147483648 (max int + 1).</dd>
+			performing a search. Has a maximum value of 2147483519 (max int - 128).</dd>
 
 		<dt>ip</dt>
 		<dd>Ranges of ip addresses to accept requests from. This should
