@@ -674,7 +674,6 @@ public class SearchBucket {
     public void parseFields(JsonObject jsonObject) throws LuceneException {
         if (jsonObject.containsKey("fields")) {
             List<JsonString> fieldStrings = jsonObject.getJsonArray("fields").getValuesAs(JsonString.class);
-            // logger.trace("Parsing fields from {}", fieldStrings);
             for (JsonString jsonString : fieldStrings) {
                 String[] splitString = jsonString.getString().split(" ");
                 if (splitString.length == 1) {

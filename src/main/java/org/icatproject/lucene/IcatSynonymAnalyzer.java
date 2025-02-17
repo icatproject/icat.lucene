@@ -17,10 +17,13 @@ import org.apache.lucene.analysis.standard.StandardTokenizer;
 import org.apache.lucene.analysis.synonym.SolrSynonymParser;
 import org.apache.lucene.analysis.synonym.SynonymGraphFilter;
 import org.apache.lucene.analysis.synonym.SynonymMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class IcatSynonymAnalyzer extends Analyzer {
 
     private SynonymMap synonyms;
+	static final Logger logger = LoggerFactory.getLogger(IcatSynonymAnalyzer.class);
 
     public IcatSynonymAnalyzer() {
         super();
@@ -35,6 +38,7 @@ public class IcatSynonymAnalyzer extends Analyzer {
             } catch (IOException | ParseException e) {
                 // If we cannot parse the synonyms, do nothing
                 // To all purposes this will now act as a plain IcatAnalyzer
+                logger.warn("Unable to parse synonyms: {}", e.getMessage());
             }
         }
     }
