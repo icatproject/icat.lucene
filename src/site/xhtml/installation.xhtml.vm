@@ -93,5 +93,17 @@
 			instead be configured to update sizes at a regular intervals.</dd>
 	</dl>
 
+	<h2>The synonym.txt file</h2>
+
+	<p>Lucene supports synonym injection via the inclusion of the synonym.txt file.
+		The format of the file follows the
+		<a href="https://lucene.apache.org/core/8_11_2/analyzers-common/org/apache/lucene/analysis/synonym/SolrSynonymParser.html">Solr synonyms format.</a>
+		Either equivalent or one way mappings of terms is supported. An example file
+		containing chemical symbols and full names of elements, and abbreviations of the
+		<a href="https://bioportal.bioontology.org/ontologies/PANET/">PaNET ontology</a>
+		is included, but modifications to this can be made. Note that ideally the
+		synonym file should be defined before indexing, so that synonymous terms are
+		indexed in the same way as they are searched.</p>
+
 </body>
 </html>
