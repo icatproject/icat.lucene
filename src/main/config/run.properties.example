@@ -1,6 +1,17 @@
 # Real comments in this file are marked with '#' whereas commented out lines
 # are marked with '!'
 
-directory     = ${HOME}/data/lucene
-commitSeconds = 5
-ip            = 127.0.0.1/32
+directory      = ${HOME}/data/search
+commitSeconds  = 5
+# Lucene limits the max number of documents in an index to Integer.MAX_VALUE - 128
+maxShardSize   = 2147483519
+ip             = 127.0.0.1/32
+# A search taking longer than this will be cancelled to avoid blocking other users' searches
+maxSearchTimeSeconds = 5
+# List of units to enable conversion to SI units when querying on numerical parameters
+!units          = J: eV 1.602176634e-19; \u2103: celsius, degC; K: kelvin
+# List of fields that should be stored for facet filtering when searching
+# In order to be available, these fields must be set when indexing the data
+facetFields    = datafileFormat.name instrument.name sample.type.name stringValue technique.name type.name
+# Aggregate file sizes and counts in real time (this will have a performance impact on write operations)
+aggregateFiles = false

@@ -1,0 +1,246 @@
+# Synonyms to be applied after stemming according to the Porter algorithm
+
+# Alternate spellings
+ionise, ionize
+
+# Elements
+Hydrogen, H
+Helium, He
+Lithium, Li
+Beryllium, Be
+Boron, B
+Carbon, C
+Nitrogen, N
+Oxygen, O
+Fluorine, F
+Neon, Ne
+Sodium,Na
+Magnesium,Mg
+Aluminum,Al
+Silicon,Si
+Phosphorus,P
+Sulfur, Sulphur,S
+Chlorine,Cl
+Argon,Ar
+Potassium,K
+Calcium,Ca
+Scandium,Sc
+Titanium,Ti
+Vanadium,V
+Chromium,Cr
+Manganese,Mn
+Iron,Fe
+Cobalt,Co
+Nickel,Ni
+Copper,Cu
+Zinc,Zn
+Gallium,Ga
+Germanium,Ge
+Arsenic,As
+Selenium,Se
+Bromine,Br
+Krypton,Kr
+Rubidium,Rb
+Strontium,Sr
+Yttrium,Y
+Zirconium,Zr
+Niobium,Nb
+Molybdenum,Mo
+Technetium,Tc
+Ruthenium,Ru
+Rhodium,Rh
+Palladium,Pd
+Silver,Ag
+Cadmium,Cd
+Indium,In
+Tin,Sn
+Antimony,Sb
+Tellurium,Te
+Iodine,I
+Xenon,Xe
+Caesium, Cesium, Cs
+Barium,Ba
+Lanthanum,La
+Cerium,Ce
+Praseodymium,Pr
+Neodymium,Nd
+Promethium,Pm
+Samarium,Sm
+Europium,Eu
+Gadolinium,Gd
+Terbium,Tb
+Dysprosium,Dy
+Holmium,Ho
+Erbium,Er
+Thulium,Tm
+Ytterbium,Yb
+Lutetium,Lu
+Hafnium,Hf
+Tantalum,Ta
+Tungsten, Wolfram,W
+Rhenium,Re
+Osmium,Os
+Iridium,Ir
+Platinum,Pt
+Gold,Au
+Mercury,Hg
+Thallium,Tl
+Lead,Pb
+Bismuth,Bi
+Polonium,Po
+Astatine,At
+Radon,Rn
+Francium,Fr
+Radium,Ra
+Actinium,Ac
+Thorium,Th
+Protactinium,Pa
+Uranium,U
+Neptunium,Np
+Plutonium,Pu
+Americium,Am
+Curium,Cm
+Berkelium,Bk
+Californium,Cf
+Einsteinium,Es
+Fermium,Fm
+Mendelevium,Md
+Nobelium,No
+Lawrencium,Lr
+Rutherfordium,Rf
+Dubnium,Db
+Seaborgium,Sg
+Bohrium,Bh
+Hassium,Hs
+Meitnerium, Mt
+Darmstadtium ,Ds
+Roentgenium ,Rg
+Copernicium ,Cn
+Nihonium,Nh
+Flerovium,Fl
+Moscovium,Mc
+Livermorium,Lv
+Tennessine,Ts
+Oganesson,Og
+
+# Techniques
+forward scattering technique, propagation technique => forward scattering technique, propagation technique
+TOF, time of flight technique => TOF, time of flight technique
+femtosecond probe, ultrafast probe => femtosecond probe, ultrafast probe
+MuSR, muon spin resonance => MuSR, muon spin resonance
+crystallography, obtain crystal structure => crystallography, obtain crystal structure
+time dependent study, time resolved study => time dependent study, time resolved study
+ARPES, angle resolved photoemission spectroscopy => ARPES, angle resolved photoemission spectroscopy
+GISAS, grazing incidence SAS, grazing incidence small angle scattering => GISAS, grazing incidence SAS, grazing incidence small angle scattering
+NPD, neutron powder diffraction => NPD, neutron powder diffraction
+XPD, x-ray powder diffraction => XPD, x-ray powder diffraction
+SXRD, single crystal x-ray diffraction, x-ray single crystal diffraction => SXRD, single crystal x-ray diffraction, x-ray single crystal diffraction
+HAXPES, hard photoelectron spectroscopy, hard x-ray photoelectron spectroscopy => HAXPES, hard photoelectron spectroscopy, hard x-ray photoelectron spectroscopy
+inelastic SAS, inelastic small angle scatteringng => inelastic SAS, inelastic small angle scatteringng
+IR spectroscopy, infrared spectroscopy => IR spectroscopy, infrared spectroscopy
+Micro XRF, fluorescence microscopy, microfluorescence => Micro XRF, fluorescence microscopy, microfluorescence
+PCS, photon correlation spectroscopy => PCS, photon correlation spectroscopy
+quasi elastic spin echo, quasielastic neutron spin echo scattering, quasielastic spin echo => quasi elastic spin echo, quasielastic neutron spin echo scattering, quasielastic spin echo
+reflectivity, reflectometry => reflectivity, reflectometry
+anomalous diffraction, anomalous scattering, resonant diffraction => anomalous diffraction, anomalous scattering, resonant diffraction
+STM, scanning transmission microscopy => STM, scanning transmission microscopy
+SAS, small angle diffraction, small angle scattering => SAS, small angle diffraction, small angle scattering
+spin echo SANS, spin echo small angle scattering => spin echo SANS, spin echo small angle scattering
+UV circular dichroism, UVCD => UV circular dichroism, UVCD
+USAS, ultra small angle scattering => USAS, ultra small angle scattering
+diffraction imaging, topography => diffraction imaging, topography
+XMCD, x-ray magnetic circular dichroism => XMCD, x-ray magnetic circular dichroism
+LD, linear dichroism => LD, linear dichroism
+XEOL, x-ray excited optical luminescence => XEOL, x-ray excited optical luminescence
+MCD, magnetic circular dichroism => MCD, magnetic circular dichroism
+MChD, magnetochiral dichroism => MChD, magnetochiral dichroism
+NCD, natural circular dichroism => NCD, natural circular dichroism
+EM, electron microscopy => EM, electron microscopy
+PEEM, photoemission electron microscopy, photoemission microscopy => PEEM, photoemission electron microscopy, photoemission microscopy
+scanning microscopy, scanning probe microscopy => scanning microscopy, scanning probe microscopy
+XRR, x-ray reflectivity, x-ray reflectometry => XRR, x-ray reflectivity, x-ray reflectometry
+EDD, energy dispersive diffraction => EDD, energy dispersive diffraction
+EDXRD, energy dispersive x-ray diffraction => EDXRD, energy dispersive x-ray diffraction
+GIXD, grazing incidence x-ray diffraction => GIXD, grazing incidence x-ray diffraction
+GISAXS, grazing incidence small angle x-ray scattering => GISAXS, grazing incidence small angle x-ray scattering
+Diffraction, high pressure single crystal diffraction => Diffraction, high pressure single crystal diffraction
+MX, macromolecular crystallography, protein crystallography => MX, macromolecular crystallography, protein crystallography
+MAD, multi wavelength anomalous diffraction, multi wavelength anomalous dispersion => MAD, multi wavelength anomalous diffraction, multi wavelength anomalous dispersion
+PhD, photoelectron diffraction => PhD, photoelectron diffraction
+SFX, serial femtosecond crystallography => SFX, serial femtosecond crystallography
+SSX, serial synchrotron crystallography => SSX, serial synchrotron crystallography
+SAD, single wavelength anomalous diffraction, single wavelength anomalous dispersion => SAD, single wavelength anomalous diffraction, single wavelength anomalous dispersion
+chemical crystallography, small molecule crystallography, small molecule diffraction => chemical crystallography, small molecule crystallography, small molecule diffraction
+XSW, x-ray standing wave => XSW, x-ray standing wave
+CDI, coherent diffraction imaging, coherent diffractive imaging => CDI, coherent diffraction imaging, coherent diffractive imaging
+infrared nanospectroscopy imaging, nano infrared spectroscopy => infrared nanospectroscopy imaging, nano infrared spectroscopy
+XRF, x-ray fluorescence => XRF, x-ray fluorescence
+IR microscopy, infrared microscopy => IR microscopy, infrared microscopy
+PDF, pair distribution function => PDF, pair distribution function
+IXS, inelastic x-ray scattering => IXS, inelastic x-ray scattering
+RIXS, resonant inelastic x-ray scattering => RIXS, resonant inelastic x-ray scattering
+RXS, resonant x-ray scattering => RXS, resonant x-ray scattering
+RSXS, resonant soft x-ray scattering => RSXS, resonant soft x-ray scattering
+SAXS, small angle x-ray scattering => SAXS, small angle x-ray scattering
+SANS, small angle neutron scattering => SANS, small angle neutron scattering
+WAXS, wide angle x-ray scattering => WAXS, wide angle x-ray scattering
+CD, circular dichroism => CD, circular dichroism
+EDX, energy dispersive x-ray spectroscopy => EDX, energy dispersive x-ray spectroscopy
+XAS, x-ray absorption spectroscopy => XAS, x-ray absorption spectroscopy
+XAFS, x-ray absorption fine structure => XAFS, x-ray absorption fine structure
+EXAFS, extended x-ray absorption fine structure => EXAFS, extended x-ray absorption fine structure
+NEXAFS, XANES, x-ray absorption near edge structure => NEXAFS, XANES, x-ray absorption near edge structure
+XES, x-ray emission spectroscopy => XES, x-ray emission spectroscopy
+PES, photoelectron spectroscopy => PES, photoelectron spectroscopy
+XPS, x-ray photoelectron spectroscopy => XPS, x-ray photoelectron spectroscopy
+XPCS, x-ray photon correlation spectroscopy => XPCS, x-ray photon correlation spectroscopy
+CT scan, x-ray tomography => CT scan, x-ray tomography
+Absorption-based tomographic microscopy, absorption microtomography => Absorption-based tomographic microscopy, absorption microtomography
+Ultra-fast tomographic microscopy, ultrafast microtomography => Ultra-fast tomographic microscopy, ultrafast microtomography
+XRD, x-ray diffraction => XRD, x-ray diffraction
+STXM, scanning transmission x-ray microscopy => STXM, scanning transmission x-ray microscopy
+TEY, total electron yield => TEY, total electron yield
+XMCD TEY, XMCD total electron yield => XMCD TEY, XMCD total electron yield
+neutron reflectivity, neutron reflectometry => neutron reflectivity, neutron reflectometry
+USAXS, ultra small angle x-ray scattering => USAXS, ultra small angle x-ray scattering
+polarized neutron reflectivity, polarized neutron reflectometry => polarized neutron reflectivity, polarized neutron reflectometry
+TOF spectrometry, TOF spectroscopy, time-of-flight spectrometry => TOF spectrometry, TOF spectroscopy, time-of-flight spectrometry
+inelastic neutron scattering, inelastic neutron scattering spectroscopy, inelastic neutron spectroscopy => inelastic neutron scattering, inelastic neutron scattering spectroscopy, inelastic neutron spectroscopy
+XMLD, x-ray magnetic linear dichroism => XMLD, x-ray magnetic linear dichroism
+REXS, resonant elastic x-ray scattering => REXS, resonant elastic x-ray scattering
+x-ray refraction imaging, x-ray refraction radiography => x-ray refraction imaging, x-ray refraction radiography
+time dependent scattering, time resolved scattering => time dependent scattering, time resolved scattering
+time dependent diffraction, time resolved diffraction => time dependent diffraction, time resolved diffraction
+time dependent absorption, time resolved absorption => time dependent absorption, time resolved absorption
+ASAXS, anomalous small angle x-ray scattering => ASAXS, anomalous small angle x-ray scattering
+ASAX, anomalous solution x-ray scattering => ASAX, anomalous solution x-ray scattering
+GISANS, grazing incidence small angle neutron scattering => GISANS, grazing incidence small angle neutron scattering
+VSANS, very small angle neutron scattering => VSANS, very small angle neutron scattering
+micro SAXS tomography, micro small angle x-ray scattering tomography => micro SAXS tomography, micro small angle x-ray scattering tomography
+micro GISAXS tomography, micro grazing incidence small angle x-ray scattering tomography => micro GISAXS tomography, micro grazing incidence small angle x-ray scattering tomography
+nano ARPES, nano angle resolved photoemission spectroscopy => nano ARPES, nano angle resolved photoemission spectroscopy
+scanning x-ray microscopy, x-ray scanning microscopy => scanning x-ray microscopy, x-ray scanning microscopy
+HR-XPS, high resolution x-ray photoelectron spectroscopy => HR-XPS, high resolution x-ray photoelectron spectroscopy
+RENS, elastic neutron scattering spectroscopy, resolution elastic neutron scattering => RENS, elastic neutron scattering spectroscopy, resolution elastic neutron scattering
+XMChiD, x-ray magnetochiral dichroism => XMChiD, x-ray magnetochiral dichroism
+XNCD, x-ray natural circular dichroism => XNCD, x-ray natural circular dichroism
+XNLD, x-ray natural linear dichroism => XNLD, x-ray natural linear dichroism
+crystallographic fragment screening, fragment screening => crystallographic fragment screening, fragment screening
+microfocus MX, microfocus macromolecular crystallography => microfocus MX, microfocus macromolecular crystallography
+nanofocus MX, nanofocus macromolecular crystallography => nanofocus MX, nanofocus macromolecular crystallography
+MR, molecular replacement => MR, molecular replacement
+TR-SFX, time resolved serial femtosecond crystallography => TR-SFX, time resolved serial femtosecond crystallography
+FT-SSX, fixed target serial synchrotron crystallography => FT-SSX, fixed target serial synchrotron crystallography
+LCP-SSX, lipidic cubic phase serial synchrotron crystallography => LCP-SSX, lipidic cubic phase serial synchrotron crystallography
+TR-SSX, time resolved serial synchrotron crystallography => TR-SSX, time resolved serial synchrotron crystallography
+CLXM, correlative light x-ray microscopy => CLXM, correlative light x-ray microscopy
+GIWAXS, grazing incidence wide angle scattering => GIWAXS, grazing incidence wide angle scattering
+HR-ARPES, high resolution angle resolved photoemission spectroscopy => HR-ARPES, high resolution angle resolved photoemission spectroscopy
+AFM, atomic force microscopy => AFM, atomic force microscopy
+AFM-IR, atomic force microscope infrared spectroscopy => AFM-IR, atomic force microscope infrared spectroscopy
+FTIR, fourier transform infrared spectroscopy => FTIR, fourier transform infrared spectroscopy
+ED-EXAFS, EDE, energy dispersive extended x-ray absorption fine structure => ED-EXAFS, EDE, energy dispersive extended x-ray absorption fine structure
+radiation therapy, radiotherapy => radiation therapy, radiotherapy
+obtain surface atomic structure, surface crystallography => obtain surface atomic structure, surface crystallography
+XBI, x-ray birefringence imaging  => XBI, x-ray birefringence imaging 
+
