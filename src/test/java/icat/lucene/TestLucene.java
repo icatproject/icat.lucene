@@ -50,7 +50,14 @@ import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.icatproject.lucene.IcatAnalyzer;
 import org.icatproject.lucene.IcatSynonymAnalyzer;
+import org.icatproject.lucene.Lucene;
+import org.icatproject.lucene.SearchBucket;
+import org.icatproject.lucene.SearchBucket.SearchType;
+import org.icatproject.lucene.exceptions.LuceneException;
 import org.junit.Test;
+
+import jakarta.json.Json;
+import jakarta.json.JsonObjectBuilder;
 
 public class TestLucene {
 
@@ -290,6 +297,24 @@ public class TestLucene {
 		checkFacets(labelValuesParameter, labelValuesSample, "*", investigationSearcher, directoryReader, parser);
 
 		System.out.println("Facet tests took " + (System.currentTimeMillis() - start) + "ms");
+	}
+
+	@Test
+	public void testLowercaseWildcard() throws Exception {
+		Lucene lucene = new Lucene();
+		checkQuery(lucene, "name:XX03RG9MTD1?", "+name:xx03rg9mtd1?");
+		checkQuery(lucene, "name:XX03RG9MTD1*", "+name:xx03rg9mtd1*");
+		checkQuery(lucene, "name:XX03RG9MTD1? name:processing", "+(name:xx03rg9mtd1? name:process)");
+		checkQuery(lucene, "+name:XX03RG9MTD1? -name:processing", "+(+name:xx03rg9mtd1? -name:process)");
+	}
+
+	private void checkQuery(Lucene lucene, String text, String expected) throws LuceneException, IOException, QueryNodeException {
+		JsonObjectBuilder builder = Json.createObjectBuilder();
+		JsonObjectBuilder innerBuilder = Json.createObjectBuilder();
+		innerBuilder.add("text", text);
+		builder.add("query", innerBuilder);
+		SearchBucket bucket = new SearchBucket(lucene, SearchType.DATAFILE, builder.build(), null, null);
+		assertEquals(expected, bucket.query.toString());
 	}
 
 

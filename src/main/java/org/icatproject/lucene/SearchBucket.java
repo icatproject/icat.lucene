@@ -33,11 +33,13 @@ import org.apache.lucene.facet.range.Range;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.flexible.core.QueryNodeException;
 import org.apache.lucene.queryparser.flexible.core.QueryNodeParseException;
+import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
+import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
@@ -104,14 +106,31 @@ public class SearchBucket {
      */
     public SearchBucket(Lucene lucene, SearchType searchType, HttpServletRequest request, String sort,
             String searchAfter) throws LuceneException, IOException, QueryNodeException {
+        this(lucene, searchType, Json.createReader(request.getInputStream()).readObject(), sort, searchAfter);
+    }
+
+    /**
+     * Creates a new search from the provided request and Url parameters.
+     * 
+     * @param lucene      IcatLucene instance.
+     * @param searchType  The SearchType determines how the query is built for
+     *                    specific entities.
+     * @param object      Incoming query as Json.
+     * @param sort        Sort criteria as a Json encoded string.
+     * @param searchAfter The last FieldDoc of a previous search, encoded as Json.
+     * @throws LuceneException
+     * @throws IOException
+     * @throws QueryNodeException
+     */
+    public SearchBucket(Lucene lucene, SearchType searchType, JsonObject object, String sort,
+            String searchAfter) throws LuceneException, IOException, QueryNodeException {
         this.lucene = lucene;
         searcherMap = new HashMap<>();
         parseSort(sort);
-        try (JsonReader r = Json.createReader(request.getInputStream())) {
-            JsonObject o = r.readObject();
-            parseFields(o);
-            parseDimensions(o);
-            JsonObject jsonQuery = o.getJsonObject("query");
+        try {
+            parseFields(object);
+            parseDimensions(object);
+            JsonObject jsonQuery = object.getJsonObject("query");
             switch (searchType) {
                 case GENERIC:
                     parseGenericQuery(jsonQuery);
@@ -132,6 +151,46 @@ public class SearchBucket {
         }
     }
 
+    /**
+     * By design, Lucene does not apply Analyzers to WildcardQueries in order to avoid
+     * stemming and tokenising interfering with the user's intended query. A consequence
+     * of this is that the filter which lowercases the search text is not applied. This
+     * means a search of ABC* would not match a Document with source ABCD as the latter
+     * is lowercased when indexed, and the match between ABC* and abcd is not made.
+     * 
+     * To give a more intuitive search for users, iterate over all the nested levels of
+     * the query, extract any instanceof WildcardQuery, and case the text to lowercase.
+     * Not that we cannot naively lowercase all the text given by the user, as in
+     * principle it may contain field names which are case sensitive (e.g. visitId and
+     * not visitid).
+     * 
+     * @param query Any Lucene Query
+     * @return The same query but with the text of any WildcardQueries lowercased.
+     */
+    private Query lowercaseWildcardQueries(Query query) {
+        if (query instanceof WildcardQuery) {
+            Term term = ((WildcardQuery) query).getTerm();
+            String field = term.field();
+            String text = term.text();
+            return new WildcardQuery(new Term(field, text.toLowerCase()));
+        } else if (query instanceof PrefixQuery) {
+            Term term = ((PrefixQuery) query).getPrefix();
+            String field = term.field();
+            String text = term.text();
+            return new PrefixQuery(new Term(field, text.toLowerCase()));
+        } else if (query instanceof BooleanQuery) {
+            BooleanQuery.Builder builder = new BooleanQuery.Builder();
+            for (BooleanClause clause : (BooleanQuery) query) {
+                Query nestedQuery = clause.getQuery();
+                Query processedNestedQuery = lowercaseWildcardQueries(nestedQuery);
+                builder.add(processedNestedQuery, clause.getOccur());
+            }
+            return builder.build();
+        } else {
+            return query;
+        }
+    }
+
     private void parseDatafileQuery(String searchAfter, JsonObject jsonQuery)
             throws LuceneException, IOException, QueryNodeException {
         BooleanQuery.Builder luceneQuery = new BooleanQuery.Builder();
@@ -145,7 +204,9 @@ public class SearchBucket {
 
         String text = jsonQuery.getString("text", null);
         if (text != null) {
-            luceneQuery.add(DocumentMapping.datafileParser.parse(text, null), Occur.MUST);
+            Query parsedQuery = DocumentMapping.datafileParser.parse(text, null);
+            Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
+            luceneQuery.add(lowercasedQuery, Occur.MUST);
         }
 
         buildDateRanges(luceneQuery, jsonQuery, "lower", "upper", "date");
@@ -176,7 +237,9 @@ public class SearchBucket {
 
         String text = jsonQuery.getString("text", null);
         if (text != null) {
-            luceneQuery.add(DocumentMapping.datasetParser.parse(text, null), Occur.MUST);
+            Query parsedQuery = DocumentMapping.datasetParser.parse(text, null);
+            Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
+            luceneQuery.add(lowercasedQuery, Occur.MUST);
         }
 
         buildDateRanges(luceneQuery, jsonQuery, "lower", "upper", "startDate", "endDate");
@@ -208,11 +271,15 @@ public class SearchBucket {
         String text = jsonQuery.getString("text", null);
         if (text != null) {
             Builder textBuilder = new BooleanQuery.Builder();
-            textBuilder.add(DocumentMapping.investigationParser.parse(text, null), Occur.SHOULD);
+            Query parsedQuery = DocumentMapping.investigationParser.parse(text, null);
+            Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
+            textBuilder.add(lowercasedQuery, Occur.SHOULD);
 
             IndexSearcher sampleSearcher = lucene.getSearcher(searcherMap, "Sample");
+            parsedQuery = DocumentMapping.sampleParser.parse(text, null);
+            lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
             Query joinedSampleQuery = JoinUtil.createJoinQuery("sample.investigation.id", false, "id", Long.class,
-                    DocumentMapping.sampleParser.parse(text, null), sampleSearcher, ScoreMode.Avg);
+                    lowercasedQuery, sampleSearcher, ScoreMode.Avg);
             textBuilder.add(joinedSampleQuery, Occur.SHOULD);
             luceneQuery.add(textBuilder.build(), Occur.MUST);
         }
@@ -234,8 +301,9 @@ public class SearchBucket {
         String userFullName = jsonQuery.getString("userFullName", null);
         if (userFullName != null) {
             BooleanQuery.Builder userFullNameQuery = new BooleanQuery.Builder();
-            userFullNameQuery.add(DocumentMapping.genericParser.parse(userFullName, "user.fullName"),
-                    Occur.MUST);
+            Query parsedQuery = DocumentMapping.genericParser.parse(userFullName, "user.fullName");
+            Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
+            userFullNameQuery.add(lowercasedQuery, Occur.MUST);
             IndexSearcher investigationUserSearcher = lucene.getSearcher(searcherMap, "InvestigationUser");
             Query toQuery = JoinUtil.createJoinQuery("investigation.id", false, "id", Long.class,
                     userFullNameQuery.build(),
