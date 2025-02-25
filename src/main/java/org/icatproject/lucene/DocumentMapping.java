@@ -19,17 +19,34 @@ public class DocumentMapping {
 	public static class ParentRelationship {
 		public String parentName;
 		public String joiningField;
-		public Set<String> fields;
+		public boolean cascadeDelete;
+		public Map<String, String> fieldMapping;
 
 		/**
-		 * @param parentName   Name of the parent entity.
-		 * @param joiningField Field that joins the child to its parent.
-		 * @param fields       Fields that should be updated by this relationship.
+		 * @param parentName    Name of the parent entity.
+		 * @param joiningField  Field that joins the child to its parent.
+		 * @param cascadeDelete If the child is deleted, whether the parent onto which
+		 * 						it is nested should be deleted wholesale or just have
+		 * 						its fields pruned.
+		 * @param fields        Fields that should be updated by this relationship where
+		 * 					    the field is the same on parent and child.
 		 */
-		public ParentRelationship(String parentName, String joiningField, String... fields) {
+		public ParentRelationship(String parentName, String joiningField, boolean cascadeDelete, String... fields) {
 			this.parentName = parentName;
 			this.joiningField = joiningField;
-			this.fields = new HashSet<>(Arrays.asList(fields));
+			this.cascadeDelete = cascadeDelete;
+			fieldMapping = new HashMap<>();
+			for (String field : fields) {
+				fieldMapping.put(field, field);
+			}
+		}
+
+		/**
+		 * @param parentField Name on the parent, such as "dataset.name"
+		 * @param childField  Name on the child, such as "name"
+		 */
+		public void mapField(String parentField, String childField) {
+			fieldMapping.put(parentField, childField);
 		}
 	}
 
@@ -73,44 +90,50 @@ public class DocumentMapping {
 				"DatasetParameter", "DatasetTechnique", "InstrumentScientist", "InvestigationFacilityCycle",
 				"InvestigationInstrument", "InvestigationParameter", "InvestigationUser", "Sample", "SampleParameter"));
 
-		relationships.put("Instrument",
-				new ParentRelationship[] { new ParentRelationship("InvestigationInstrument", "instrument.id",
-						"instrument.name", "instrument.fullName") });
-		relationships.put("User",
-				new ParentRelationship[] {
-						new ParentRelationship("InvestigationUser", "user.id", "user.name", "user.fullName"),
-						new ParentRelationship("InstrumentScientist", "user.id", "user.name", "user.fullName") });
+		relationships.put("Instrument", new ParentRelationship[] {
+				new ParentRelationship("InvestigationInstrument", "instrument.id", true, "instrument.name",
+						"instrument.fullName") });
+		relationships.put("User", new ParentRelationship[] {
+				new ParentRelationship("InvestigationUser", "user.id", true, "user.name", "user.fullName"),
+				new ParentRelationship("InstrumentScientist", "user.id", true, "user.name", "user.fullName") });
 		relationships.put("Sample", new ParentRelationship[] {
-				new ParentRelationship("Dataset", "sample.id", "sample.name", "sample.investigation.id"),
-				new ParentRelationship("Datafile", "sample.id", "sample.name", "sample.investigation.id") });
-		relationships.put("SampleType",
-				new ParentRelationship[] { new ParentRelationship("Sample", "type.id", "type.name"),
-						new ParentRelationship("Dataset", "sample.type.id", "sample.type.name"),
-						new ParentRelationship("Datafile", "sample.type.id", "sample.type.name") });
+				new ParentRelationship("Dataset", "sample.id", false, "sample.name", "sample.investigation.id"),
+				new ParentRelationship("Datafile", "sample.id", false, "sample.name", "sample.investigation.id") });
+		relationships.put("SampleType", new ParentRelationship[] {
+				new ParentRelationship("Sample", "type.id", true, "type.name"),
+				new ParentRelationship("Dataset", "sample.type.id", false, "sample.type.name"),
+				new ParentRelationship("Datafile", "sample.type.id", false, "sample.type.name") });
 		relationships.put("InvestigationType",
-				new ParentRelationship[] { new ParentRelationship("Investigation", "type.id", "type.name") });
+				new ParentRelationship[] { new ParentRelationship("Investigation", "type.id", true, "type.name") });
 		relationships.put("DatasetType",
-				new ParentRelationship[] { new ParentRelationship("Dataset", "type.id", "type.name") });
+				new ParentRelationship[] { new ParentRelationship("Dataset", "type.id", true, "type.name") });
 		relationships.put("DatafileFormat",
 				new ParentRelationship[] {
-						new ParentRelationship("Datafile", "datafileFormat.id", "datafileFormat.name") });
+						new ParentRelationship("Datafile", "datafileFormat.id", false, "datafileFormat.name") });
 		relationships.put("Facility",
-				new ParentRelationship[] { new ParentRelationship("Investigation", "facility.id", "facility.name") });
+				new ParentRelationship[] { new ParentRelationship("Investigation", "facility.id", true, "facility.name") });
 		relationships.put("ParameterType",
-				new ParentRelationship[] { new ParentRelationship("DatafileParameter", "type.id", "type.name"),
-						new ParentRelationship("DatasetParameter", "type.id", "type.name"),
-						new ParentRelationship("InvestigationParameter", "type.id", "type.name"),
-						new ParentRelationship("SampleParameter", "type.id", "type.name") });
+				new ParentRelationship[] { new ParentRelationship("DatafileParameter", "type.id", true, "type.name"),
+						new ParentRelationship("DatasetParameter", "type.id", true,"type.name"),
+						new ParentRelationship("InvestigationParameter", "type.id", true, "type.name"),
+						new ParentRelationship("SampleParameter", "type.id", true, "type.name") });
 		relationships.put("Technique",
-				new ParentRelationship[] { new ParentRelationship("DatasetTechnique", "technique.id", "technique.name",
+				new ParentRelationship[] { new ParentRelationship("DatasetTechnique", "technique.id", true,"technique.name",
 						"technique.description", "technique.pid") });
-		relationships.put("Investigation",
-				new ParentRelationship[] {
-						new ParentRelationship("Dataset", "investigation.id", "investigation.name",
-								"investigation.title", "investigation.startDate", "visitId"),
-						new ParentRelationship("datafile", "investigation.id", "investigation.name", "visitId") });
-		relationships.put("Dataset",
-				new ParentRelationship[] { new ParentRelationship("Datafile", "dataset.id", "dataset.name") });
+
+		ParentRelationship investigationDatasetRelationship = new ParentRelationship("Dataset", "investigation.id",
+				true, "visitId");
+		investigationDatasetRelationship.mapField("investigation.name", "name");
+		investigationDatasetRelationship.mapField("investigation.title", "title");
+		investigationDatasetRelationship.mapField("investigation.startDate", "startDate");
+		ParentRelationship investigationDatafileRelationship = new ParentRelationship("Datafile", "investigation.id",
+				true,"visitId");
+		investigationDatafileRelationship.mapField("investigation.name", "name");
+		relationships.put("Investigation", new ParentRelationship[] {investigationDatasetRelationship, investigationDatafileRelationship });
+
+		ParentRelationship datasetDatafileRelationship = new ParentRelationship("Datafile", "dataset.id", true);
+		datasetDatafileRelationship.mapField("dataset.name", "name");
+		relationships.put("Dataset", new ParentRelationship[] { datasetDatafileRelationship });
 	}
 
 	private static StandardQueryParser buildParser(String... defaultFields) {

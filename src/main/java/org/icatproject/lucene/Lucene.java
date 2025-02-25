@@ -32,6 +32,7 @@ import jakarta.json.JsonObject;
 import jakarta.json.JsonObjectBuilder;
 import jakarta.json.JsonReader;
 import jakarta.json.JsonStructure;
+import jakarta.json.JsonValue.ValueType;
 import jakarta.json.stream.JsonGenerator;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.ws.rs.Consumes;
@@ -84,6 +85,7 @@ import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Counter;
 import org.apache.lucene.util.NumericUtils;
+import org.icatproject.lucene.DocumentMapping.ParentRelationship;
 import org.icatproject.lucene.SearchBucket.SearchType;
 import org.icatproject.lucene.exceptions.LuceneException;
 import org.icatproject.utils.CheckedProperties;
@@ -253,8 +255,20 @@ public class Lucene {
 		 * @throws IOException
 		 */
 		public void deleteDocument(long icatId) throws IOException {
+			deleteDocuments("id", icatId);
+		}
+
+		/**
+		 * Deletes documents from the appropriate shard for this index.
+		 * 
+		 * @param field The field to use for identification.
+		 * @param value The value of the field on documents to be deleted.
+		 * @throws IOException
+		 */
+		public void deleteDocuments(String field, long value) throws IOException {
+			Query query = LongPoint.newExactQuery(field, value);
 			for (ShardBucket shardBucket : shardList) {
-				shardBucket.indexWriter.deleteDocuments(LongPoint.newExactQuery("id", icatId));
+				shardBucket.indexWriter.deleteDocuments(query);
 			}
 		}
 
@@ -517,9 +531,6 @@ public class Lucene {
 	 */
 	private void create(JsonObject operationBody) throws NumberFormatException, IOException, LuceneException {
 		String entityName = operationBody.getString("_index");
-		if (DocumentMapping.relationships.containsKey(entityName)) {
-			updateByRelation(operationBody, false);
-		}
 		if (DocumentMapping.indexedEntities.contains(entityName)) {
 			JsonObject documentObject = operationBody.getJsonObject("doc");
 			Document document = parseDocument(documentObject);
@@ -725,6 +736,7 @@ public class Lucene {
 				// Special case for filesizes
 				if (aggregateFiles && entityName.equals("Datafile")) {
 					for (ShardBucket shardBucket : bucket.shardList) {
+						shardBucket.commit();
 						IndexSearcher datafileSearcher = shardBucket.searcherManager.acquire();
 						try {
 							TopDocs topDocs = datafileSearcher.search(idQuery, 1);
@@ -974,7 +986,7 @@ public class Lucene {
 
 			commitSeconds = props.getPositiveInt("commitSeconds");
 			luceneCommitMillis = commitSeconds * 1000;
-			luceneMaxShardSize = Math.max(props.getPositiveLong("maxShardSize"), Long.valueOf(Integer.MAX_VALUE - 128));
+			luceneMaxShardSize = Math.min(props.getPositiveLong("maxShardSize"), Long.valueOf(Integer.MAX_VALUE - 128));
 			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds")
 					: 5;
 			aggregateFiles = props.getBoolean("aggregateFiles", false);
@@ -1537,7 +1549,7 @@ public class Lucene {
 	private Document parseDocument(JsonObject json) {
 		Document document = new Document();
 		for (String key : json.keySet()) {
-			Field field = new Field(json, key, facetFields);
+			Field field = new Field(json, key, key, facetFields);
 			field.addToDocument(document);
 			convertUnits(json, document, key);
 		}
@@ -1602,19 +1614,22 @@ public class Lucene {
 	 * oldDocument, except in cases where json has an entry for that field. In this
 	 * case, the json value is used instead.
 	 * 
-	 * @param json        Key value pairs of fields to overwrite fields already
-	 *                    present in oldDocument.
-	 * @param oldDocument Lucene Document to be updated.
+	 * @param fieldMapping Mapping of the Document fieldName to the key that is used in
+	 * 					   the json.
+	 * @param json         Key value pairs of fields to overwrite fields already
+	 *                     present in oldDocument.
+	 * @param oldDocument  Lucene Document to be updated.
 	 * @return Lucene Document with updated fields.
 	 */
-	private Document updateDocumentFields(JsonObject json, Document oldDocument) {
+	private Document updateDocumentFields(Map<String, String> fieldMapping, JsonObject json, Document oldDocument) {
 		Document newDocument = new Document();
 		List<Field> fieldsSI = new ArrayList<>();
 		boolean hasNewUnits = false;
 		for (IndexableField field : oldDocument.getFields()) {
 			String fieldName = field.name();
-			if (json.containsKey(fieldName)) {
-				Field jsonField = new Field(json, fieldName, facetFields);
+			String key = fieldMapping.getOrDefault(fieldName, null);
+			if (key != null && json.containsKey(key)) {
+				Field jsonField = new Field(json, key, fieldName, facetFields);
 				jsonField.addToDocument(newDocument);
 				hasNewUnits = hasNewUnits || convertUnits(json, newDocument, fieldName);
 			} else if (fieldName.endsWith("SI")) {
@@ -1706,6 +1721,7 @@ public class Lucene {
 				JsonNumber jsonFileSize = documentObject.getJsonNumber("fileSize");
 				if (jsonFileSize != null) {
 					long sizeToSubtract = 0;
+					bucket.commit("aggregateFiles", entityName);
 					List<IndexSearcher> datafileSearchers = bucket.acquireSearchers();
 					for (IndexSearcher datafileSearcher : datafileSearchers) {
 						TopDocs topDocs = datafileSearcher.search(LongPoint.newExactQuery("id", icatId), 1);
@@ -1732,9 +1748,8 @@ public class Lucene {
 
 	/**
 	 * Updates an existing Lucene document, provided that the target index is not
-	 * locked
-	 * for another operation. In this case, the entity being updated does not have
-	 * its own index, but exists as fields on a parent. For example,
+	 * locked for another operation. In this case, the entity being updated does not
+	 * have its own index, but exists as fields on a parent. For example,
 	 * InvestigationType on an Investigation.
 	 * 
 	 * @param operationBody JsonObject containing the "_index" that the new "doc"
@@ -1747,31 +1762,95 @@ public class Lucene {
 	 */
 	private void updateByRelation(JsonObject operationBody, boolean delete)
 			throws LuceneException, NumberFormatException, IOException {
-		for (DocumentMapping.ParentRelationship parentRelationship : DocumentMapping.relationships
-				.get(operationBody.getString("_index"))) {
-			long childId = operationBody.getJsonNumber("_id").longValueExact();
-			IndexBucket bucket = indexBuckets.computeIfAbsent(parentRelationship.parentName.toLowerCase(),
-					k -> new IndexBucket(k));
-			if (bucket.locked.get()) {
-				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE,
-						"Lucene locked for " + parentRelationship.parentName);
+		String index = operationBody.getString("_index");
+		long childId = operationBody.getJsonNumber("_id").longValueExact();
+		JsonObject newJson = operationBody.getJsonObject("doc");
+		logger.trace("newJson: {}", newJson);
+		int blockSize = 10000;
+		Sort sort = new Sort(new SortField("id", Type.LONG));
+		Document oldChildDocument = null;
+		if (!delete) {
+			IndexBucket childBucket = indexBuckets.computeIfAbsent(index.toLowerCase(), k -> new IndexBucket(k));
+			if (childBucket.locked.get()) {
+				String message = "Lucene locked for " + index;
+				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE, message);
 			}
-			IndexSearcher searcher = getSearcher(new HashMap<>(), parentRelationship.parentName);
-
-			int blockSize = 10000;
-			Query query = LongPoint.newExactQuery(parentRelationship.joiningField, childId);
-			Sort sort = new Sort(new SortField("id", Type.LONG));
-			ScoreDoc[] scoreDocs = searcher.search(query, blockSize, sort).scoreDocs;
-			while (scoreDocs.length != 0) {
-				for (ScoreDoc scoreDoc : scoreDocs) {
-					Document oldDocument = searcher.doc(scoreDoc.doc);
-					long parentId = oldDocument.getField("id").numericValue().longValue();
-					Document newDocument = delete ? pruneDocument(parentRelationship.fields, oldDocument)
-							: updateDocumentFields(operationBody.getJsonObject("doc"), oldDocument);
-					logger.trace("updateByRelation: {}", newDocument);
-					bucket.updateDocument(parentId, facetsConfig.build(newDocument));
+			childBucket.commit("updateByRelation", index);
+			List<IndexSearcher> childSearchers = getSearchers(new HashMap<>(), index);
+			Query query = LongPoint.newExactQuery("id", childId);
+			for (IndexSearcher searcher : childSearchers) {
+				ScoreDoc[] scoreDocs = searcher.search(query, blockSize, sort).scoreDocs;
+				if (scoreDocs.length != 0) {
+					oldChildDocument = searcher.doc(scoreDocs[0].doc);
+					logger.trace("Found child document: {}", oldChildDocument.toString());
+					break;
 				}
-				scoreDocs = searcher.searchAfter(scoreDocs[scoreDocs.length - 1], query, blockSize, sort).scoreDocs;
+			}
+		}
+		ParentRelationship[] parentRelationships = DocumentMapping.relationships.get(index);
+		for (DocumentMapping.ParentRelationship parentRelationship : parentRelationships) {
+			String lowerCaseParentName = parentRelationship.parentName.toLowerCase();
+			IndexBucket bucket = indexBuckets.computeIfAbsent(lowerCaseParentName, k -> new IndexBucket(k));
+			if (bucket.locked.get()) {
+				String message = "Lucene locked for " + parentRelationship.parentName;
+				throw new LuceneException(HttpURLConnection.HTTP_NOT_ACCEPTABLE, message);
+			}
+
+			if (delete && parentRelationship.cascadeDelete) {
+				bucket.deleteDocuments(parentRelationship.joiningField, childId);
+				continue;
+			} else if (!delete && oldChildDocument != null) {
+				boolean updateRequired = false;
+				for (String childFieldName : parentRelationship.fieldMapping.values()) {
+					String oldValue = oldChildDocument.get(childFieldName);
+					if (!newJson.containsKey(childFieldName)) {
+						continue;
+					}
+					ValueType valueType = newJson.get(childFieldName).getValueType();
+					
+					switch (valueType) {
+						case STRING:
+							String newString = newJson.getString(childFieldName, null);
+							if (!newString.equals(oldValue)) {
+								logger.trace("{}: old={} new={}", childFieldName, oldValue, newString);
+								updateRequired = true;
+							}
+							break;
+						default:
+							String newValue = newJson.get(childFieldName).toString();
+							if (!newValue.equals(oldValue)) {
+								logger.trace("{}: old={} new={}", childFieldName, oldValue, newValue);
+								updateRequired = true;
+							}
+							break;
+					}
+				}
+				if (!updateRequired) {
+					logger.trace("updateByRelation not required, continuing");
+					continue;
+				}
+			}
+
+			bucket.commit("updateByRelation", lowerCaseParentName);
+			List<IndexSearcher> searchers = getSearchers(new HashMap<>(), lowerCaseParentName);
+			Query query = LongPoint.newExactQuery(parentRelationship.joiningField, childId);
+			for (IndexSearcher searcher : searchers) {
+				ScoreDoc[] scoreDocs = searcher.search(query, blockSize, sort).scoreDocs;
+				while (scoreDocs.length != 0) {
+					for (ScoreDoc scoreDoc : scoreDocs) {
+						Document oldDocument = searcher.doc(scoreDoc.doc);
+						long parentId = oldDocument.getField("id").numericValue().longValue();
+						Document newDocument;
+						if (delete) {
+							newDocument = pruneDocument(parentRelationship.fieldMapping.keySet(), oldDocument);
+						} else {
+							newDocument = updateDocumentFields(parentRelationship.fieldMapping, newJson, oldDocument);
+						}
+						logger.trace("updateByRelation: {}", newDocument);
+						bucket.updateDocument(parentId, facetsConfig.build(newDocument));
+					}
+					scoreDocs = searcher.searchAfter(scoreDocs[scoreDocs.length - 1], query, blockSize, sort).scoreDocs;
+				}
 			}
 		}
 	}

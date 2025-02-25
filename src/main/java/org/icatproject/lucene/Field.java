@@ -124,17 +124,18 @@ class Field {
      * 
      * @param object JsonObject containing representations of multiple fields
      * @param key    Key of a specific field in object
+     * @param name   Name of the field to be used on the Document
      * @param facetFields List of String field names which should be stored as a facetable keyword
      */
-    public Field(JsonObject object, String key, List<String> facetFields) {
-        name = key;
+    public Field(JsonObject object, String key, String name, List<String> facetFields) {
+        this.name = name;
         facetable = facetFields.contains(name);
         if (DocumentMapping.doubleFields.contains(name)) {
-            innerField = new InnerDoubleField(object.getJsonNumber(name).doubleValue());
+            innerField = new InnerDoubleField(object.getJsonNumber(key).doubleValue());
         } else if (DocumentMapping.longFields.contains(name)) {
-            innerField = new InnerLongField(object.getJsonNumber(name).longValueExact());
+            innerField = new InnerLongField(object.getJsonNumber(key).longValueExact());
         } else {
-            innerField = new InnerStringField(object.getString(name));
+            innerField = new InnerStringField(object.getString(key));
         }
     }
 
