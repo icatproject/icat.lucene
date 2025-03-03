@@ -113,10 +113,11 @@ public class DocumentMapping {
 		relationships.put("Facility",
 				new ParentRelationship[] { new ParentRelationship("Investigation", "facility.id", true, "facility.name") });
 		relationships.put("ParameterType",
-				new ParentRelationship[] { new ParentRelationship("DatafileParameter", "type.id", true, "type.name"),
-						new ParentRelationship("DatasetParameter", "type.id", true,"type.name"),
-						new ParentRelationship("InvestigationParameter", "type.id", true, "type.name"),
-						new ParentRelationship("SampleParameter", "type.id", true, "type.name") });
+				new ParentRelationship[] {
+						new ParentRelationship("DatafileParameter", "type.id", true, "type.name", "type.units"),
+						new ParentRelationship("DatasetParameter", "type.id", true,"type.name", "type.units"),
+						new ParentRelationship("InvestigationParameter", "type.id", true, "type.name", "type.units"),
+						new ParentRelationship("SampleParameter", "type.id", true, "type.name", "type.units") });
 		relationships.put("Technique",
 				new ParentRelationship[] { new ParentRelationship("DatasetTechnique", "technique.id", true,"technique.name",
 						"technique.description", "technique.pid") });
