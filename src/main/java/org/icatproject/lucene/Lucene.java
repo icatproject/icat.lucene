@@ -172,8 +172,12 @@ public class Lucene {
 			} catch (IllegalArgumentException e) {
 				// This can occur if no fields in the index have been faceted, in which case set
 				// state to null to ensure we don't (erroneously) use the old state
-				logger.error(
-						"No facets found in index, resulting in error: " + e.getClass() + " " + e.getMessage());
+				String message = e.getMessage();
+				if (message.equals("field \"$facets\" was not indexed with SortedSetDocValues")) {
+					logger.debug("No facets found in index, resulting in error: " + e.getClass() + " " + message);
+				} else {
+					logger.error("Unexpected error when initialising shard state: " + e.getClass() + " " + message);
+				}
 				state = null;
 			} finally {
 				searcherManager.release(indexSearcher);
@@ -505,7 +509,7 @@ public class Lucene {
 	@POST
 	@Path("commit")
 	public void commit() throws LuceneException {
-		logger.debug("Requesting commit for {} IndexBuckets", indexBuckets.size());
+		logger.trace("Requesting commit for {} IndexBuckets", indexBuckets.size());
 		try {
 			for (Entry<String, IndexBucket> entry : indexBuckets.entrySet()) {
 				IndexBucket bucket = entry.getValue();
@@ -787,9 +791,11 @@ public class Lucene {
 		int luceneDocId = hit.doc;
 		int shardIndex = hit.shardIndex;
 		Document document = searcher.doc(luceneDocId);
+		String documentString = document.toString();
+		logger.trace("Encoding " + documentString);
 		gen.writeStartObject().write("_id", luceneDocId).write("_shardIndex", shardIndex);
 		Float score = hit.score;
-		if (!score.equals(Float.NaN)) {
+		if (score != null && !score.equals(Float.NaN)) {
 			gen.write("_score", hit.score);
 		}
 		gen.writeStartObject("_source");
@@ -799,29 +805,33 @@ public class Lucene {
 			List<ShardBucket> shards = getShards(joinedEntityName);
 			SearchBucket joinedSearch = new SearchBucket(this);
 			String fld;
-			long parentId;
+			IndexableField indexableField;
 			if (joinedEntityName.toLowerCase().contains("investigation")) {
 				fld = "investigation.id";
 				if (entityName.equalsIgnoreCase("investigation")) {
-					parentId = document.getField("id").numericValue().longValue();
+					indexableField = document.getField("id");
 				} else {
-					parentId = document.getField("investigation.id").numericValue().longValue();
+					indexableField = document.getField("investigation.id");
 				}
 			} else {
 				fld = entityName.toLowerCase() + ".id";
-				parentId = document.getField("id").numericValue().longValue();
+				indexableField = document.getField("id");
 			}
-			joinedSearch.query = LongPoint.newExactQuery(fld, parentId);
-			joinedSearch.sort = new Sort(new SortedNumericSortField("id", Type.LONG));
-			TopFieldDocs topFieldDocs = searchShards(joinedSearch, 100, shards);
-			gen.writeStartArray(joinedEntityName.toLowerCase());
-			for (ScoreDoc joinedHit : topFieldDocs.scoreDocs) {
-				gen.writeStartObject();
-				Document joinedDocument = searchers.get(joinedHit.shardIndex).doc(joinedHit.doc);
-				joinedDocument.forEach(encodeField(gen, search.joinedFields.get(joinedEntityName)));
+			if (indexableField == null) {
+				logger.warn("Unable to join to " + joinedEntityName + " as joining id was null for " + documentString);
+			} else {
+				joinedSearch.query = LongPoint.newExactQuery(fld, indexableField.numericValue().longValue());
+				joinedSearch.sort = new Sort(new SortedNumericSortField("id", Type.LONG));
+				TopFieldDocs topFieldDocs = searchShards(joinedSearch, 100, shards);
+				gen.writeStartArray(joinedEntityName.toLowerCase());
+				for (ScoreDoc joinedHit : topFieldDocs.scoreDocs) {
+					gen.writeStartObject();
+					Document joinedDocument = searchers.get(joinedHit.shardIndex).doc(joinedHit.doc);
+					joinedDocument.forEach(encodeField(gen, search.joinedFields.get(joinedEntityName)));
+					gen.writeEnd();
+				}
 				gen.writeEnd();
 			}
-			gen.writeEnd();
 		}
 		gen.writeEnd().writeEnd(); // source object, result object
 	}
@@ -1429,6 +1439,7 @@ public class Lucene {
 
 		} catch (TimeExceededException e) {
 			String message = "Search cancelled for exceeding " + maxSearchTimeSeconds + " seconds";
+			logger.warn(message + ": user=" + search.user + " query=" + search.query.toString());
 			throw new LuceneException(HttpURLConnection.HTTP_GATEWAY_TIMEOUT, message);
 		}
 	}

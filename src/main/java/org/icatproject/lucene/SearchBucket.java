@@ -67,6 +67,7 @@ public class SearchBucket {
 
     private Lucene lucene;
     public Map<String, List<IndexSearcher>> searcherMap;
+    public String user;
     public Query query;
     public Sort sort;
     public FieldDoc searchAfter;
@@ -197,9 +198,9 @@ public class SearchBucket {
         parseSearchAfter(searchAfter);
         buildFilterQueries("datafile", jsonQuery, luceneQuery);
 
-        String userName = jsonQuery.getString("user", null);
-        if (userName != null) {
-            buildUserNameQuery(userName, luceneQuery, "investigation.id");
+        user = jsonQuery.getString("user", null);
+        if (user != null) {
+            buildUserNameQuery(luceneQuery, "investigation.id");
         }
 
         String text = jsonQuery.getString("text", null);
@@ -230,9 +231,9 @@ public class SearchBucket {
         parseSearchAfter(searchAfter);
         buildFilterQueries("dataset", jsonQuery, luceneQuery);
 
-        String userName = jsonQuery.getString("user", null);
-        if (userName != null) {
-            buildUserNameQuery(userName, luceneQuery, "investigation.id");
+        user = jsonQuery.getString("user", null);
+        if (user != null) {
+            buildUserNameQuery(luceneQuery, "investigation.id");
         }
 
         String text = jsonQuery.getString("text", null);
@@ -263,9 +264,9 @@ public class SearchBucket {
         parseSearchAfter(searchAfter);
         buildFilterQueries("investigation", jsonQuery, luceneQuery);
 
-        String userName = jsonQuery.getString("user", null);
-        if (userName != null) {
-            buildUserNameQuery(userName, luceneQuery, "id");
+        user = jsonQuery.getString("user", null);
+        if (user != null) {
+            buildUserNameQuery(luceneQuery, "id");
         }
 
         String text = jsonQuery.getString("text", null);
@@ -586,9 +587,9 @@ public class SearchBucket {
      * @throws IOException
      * @throws LuceneException
      */
-    private void buildUserNameQuery(String userName, BooleanQuery.Builder luceneQuery, String toField)
+    private void buildUserNameQuery(BooleanQuery.Builder luceneQuery, String toField)
             throws IOException, LuceneException {
-        TermQuery fromQuery = new TermQuery(new Term("user.name", userName));
+        TermQuery fromQuery = new TermQuery(new Term("user.name", user));
         Query investigationUserQuery = JoinUtil.createJoinQuery("investigation.id", false, toField, Long.class,
                 fromQuery, lucene.getSearcher(searcherMap, "InvestigationUser"), ScoreMode.None);
         Query instrumentScientistQuery = JoinUtil.createJoinQuery("instrument.id", false, "instrument.id", Long.class,
