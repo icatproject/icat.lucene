@@ -874,7 +874,6 @@ public class SearchBucket {
      * @param searchAfter String representation of a JSON object containing the
      *                    document id or "doc" (String), score ("float") in that
      *                    order.
-     * @return FieldDoc object built from the provided String, or
      * @throws LuceneException If an entry in the fields array is not a STRING or
      *                         NUMBER
      */
@@ -942,9 +941,7 @@ public class SearchBucket {
      * criteria are supported, and will be applied in order.
      * 
      * @param sortString String representation of a JSON object with the field(s) to
-     *                   sort
-     *                   as keys, and the direction ("asc" or "desc") as value(s).
-     * @return Lucene Sort object
+     *                   sort as keys, and the direction ("asc" or "desc") as value(s).
      * @throws LuceneException If the value for any key isn't "asc" or "desc"
      */
     public void parseSort(String sortString) throws LuceneException {
