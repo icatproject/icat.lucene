@@ -56,6 +56,11 @@
 		<dd>the interval in seconds between committing lucene changes to
 			disk and updating the index.</dd>
 
+		<dt>maxShardSize</dt>
+		<dd>The maximum number of documents to store in a single index before "sharding"
+			into an additional index. All sharded indices are searched at once when
+			performing a search. Has a maximum value of 2147483519 (max int - 128).</dd>
+
 		<dt>ip</dt>
 		<dd>Ranges of ip addresses to accept requests from. This should
 			be as restrictive as possible - just list the icats you need to
@@ -63,7 +68,42 @@
 			take the form of an IPV4 or IPV6 address followed by the number of
 			bits (starting from the most significant) to consider. For example
 			127.0.0.1/32 is the IPV4 value for localhost.</dd>
+
+		<dt>units</dt>
+		<dd>Recognised unit names/symbols. Each symbol recognised by indriya's
+			SimpleUnitFormat should be followed by a colon, and then a comma separated
+			list of units measuring the same property. If the unit is simply an alias
+			(e.g. "K: kelvin") this is sufficient. If a conversion is required, it
+			should be followed by this factor (e.g. "J: eV 1.602176634e-19"). Different
+			units can be separated by a semi-colon.</dd>
+
+		<dt>facetFields</dt>
+		<dd>The names of fields which should be stored as facetable. The names should
+			correspond to how the field appears in the Lucene index, which may be
+			different to how it is represented in the ICAT database due to flattening of
+			one to one relationships between entities. Accurate field names can be taken
+			from `getDoc` function(s) in icat.server. Note that in order to be available
+			at search time, the field must have been specified when indexing the
+			documents.</dd>
+
+		<dt>aggregateFiles</dt>
+		<dd>Aggregate file sizes/counts for Datasets and Investigations as Datafiles are
+			added or modified (i.e. in real time). This can have a significant
+			performance impact when writing to the index. If "false", icat.server can
+			instead be configured to update sizes at a regular intervals.</dd>
 	</dl>
+
+	<h2>The synonym.txt file</h2>
+
+	<p>Lucene supports synonym injection via the inclusion of the synonym.txt file.
+		The format of the file follows the
+		<a href="https://lucene.apache.org/core/8_11_2/analyzers-common/org/apache/lucene/analysis/synonym/SolrSynonymParser.html">Solr synonyms format.</a>
+		Either equivalent or one way mappings of terms is supported. An example file
+		containing chemical symbols and full names of elements, and abbreviations of the
+		<a href="https://bioportal.bioontology.org/ontologies/PANET/">PaNET ontology</a>
+		is included, but modifications to this can be made. Note that ideally the
+		synonym file should be defined before indexing, so that synonymous terms are
+		indexed in the same way as they are searched.</p>
 
 </body>
 </html>
