@@ -2,6 +2,8 @@ package icat.lucene;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
@@ -52,6 +54,7 @@ import org.icatproject.lucene.IcatAnalyzer;
 import org.icatproject.lucene.IcatSynonymAnalyzer;
 import org.icatproject.lucene.Lucene;
 import org.icatproject.lucene.SearchBucket;
+import org.icatproject.lucene.Lucene.ShardBucket;
 import org.icatproject.lucene.SearchBucket.SearchType;
 import org.icatproject.lucene.exceptions.LuceneException;
 import org.junit.Test;
@@ -64,6 +67,19 @@ public class TestLucene {
 	static final int scale = (int) 1.0e5;
 
 	private final FacetsConfig facetsConfig = new FacetsConfig();
+
+	@Test
+	public void testEnsureOpen() throws Exception {
+		Lucene lucene = new Lucene();
+		Path tmpLuceneDir = Files.createTempDirectory("lucene");
+		ShardBucket shardBucket = lucene.new ShardBucket(tmpLuceneDir.resolve("Investigation"));
+		shardBucket.ensureOpen();  // Should not throw as still open
+		shardBucket.indexWriter.close();
+		IndexWriter closedIndexWriter = shardBucket.indexWriter;
+		assertThrows(LuceneException.class, () -> shardBucket.ensureOpen());
+		assertNotSame(closedIndexWriter, shardBucket.indexWriter);
+		assertTrue(shardBucket.indexWriter.isOpen());
+	}
 
 	@Test
 	public void testIcatAnalyzer() throws Exception {
