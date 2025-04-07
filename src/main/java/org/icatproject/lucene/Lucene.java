@@ -199,6 +199,12 @@ public class Lucene {
 			if (!indexWriter.isOpen()) {
 				IndexWriterConfig config = new IndexWriterConfig(analyzer);
 				indexWriter = new IndexWriter(directory, config);
+				searcherManager = new SearcherManager(indexWriter, null);
+				IndexSearcher indexSearcher = searcherManager.acquire();
+				int numDocs = indexSearcher.getIndexReader().numDocs();
+				documentCount = new AtomicLong(numDocs);
+				initState(indexSearcher);
+
 				String fileName = directory.getDirectory().getFileName().toString();
 				String message = "IndexWriter for " + fileName + " was unexpectedly closed";
 				logger.error(message);
