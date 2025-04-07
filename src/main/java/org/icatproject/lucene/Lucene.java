@@ -104,9 +104,9 @@ public class Lucene {
 	 * A bucket for accessing the read and write functionality for a single "shard"
 	 * Lucene index which can then be grouped to represent a single document type.
 	 */
-	private class ShardBucket {
+	public class ShardBucket {
 		private FSDirectory directory;
-		private IndexWriter indexWriter;
+		public IndexWriter indexWriter;
 		private SearcherManager searcherManager;
 		private DefaultSortedSetDocValuesReaderState state;
 		private AtomicLong documentCount;
@@ -147,8 +147,10 @@ public class Lucene {
 		 * 
 		 * @return The number of documents committed to this shard.
 		 * @throws IOException
+		 * @throws LuceneException If the IndexWriter is closed
 		 */
-		public int commit() throws IOException {
+		public int commit() throws IOException, LuceneException {
+			ensureOpen();
 			if (indexWriter.hasUncommittedChanges()) {
 				indexWriter.commit();
 				searcherManager.maybeRefreshBlocking();
@@ -181,6 +183,32 @@ public class Lucene {
 				state = null;
 			} finally {
 				searcherManager.release(indexSearcher);
+			}
+		}
+
+		/**
+		 * To be called before attempting to commit. If the IndexWriter has
+		 * been closed, e.g. due to a previous IOException, will create a new
+		 * one and throw (so that whatever process called this knows the commit
+		 * failed and changes will not have been persisted).
+		 * 
+		 * @throws IOException If index directory cannot be read/written
+		 * @throws LuceneException If the IndexWriter is closed
+		 */
+		public void ensureOpen() throws IOException, LuceneException {
+			if (!indexWriter.isOpen()) {
+				IndexWriterConfig config = new IndexWriterConfig(analyzer);
+				indexWriter = new IndexWriter(directory, config);
+				searcherManager = new SearcherManager(indexWriter, null);
+				IndexSearcher indexSearcher = searcherManager.acquire();
+				int numDocs = indexSearcher.getIndexReader().numDocs();
+				documentCount = new AtomicLong(numDocs);
+				initState(indexSearcher);
+
+				String fileName = directory.getDirectory().getFileName().toString();
+				String message = "IndexWriter for " + fileName + " was unexpectedly closed";
+				logger.error(message);
+				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, message);
 			}
 		}
 	}
@@ -245,8 +273,9 @@ public class Lucene {
 		 * 
 		 * @param document The document to be added.
 		 * @throws IOException
+		 * @throws LuceneException If the IndexWriter is closed
 		 */
-		public void addDocument(Document document) throws IOException {
+		public void addDocument(Document document) throws IOException, LuceneException {
 			ShardBucket shardBucket = routeShard();
 			shardBucket.indexWriter.addDocument(document);
 			shardBucket.documentCount.incrementAndGet();
@@ -282,8 +311,9 @@ public class Lucene {
 		 * @param icatId   The ICAT id of the document to be updated.
 		 * @param document The document that will replace the old document.
 		 * @throws IOException
+		 * @throws LuceneException If the IndexWriter is closed
 		 */
-		public void updateDocument(long icatId, Document document) throws IOException {
+		public void updateDocument(long icatId, Document document) throws IOException, LuceneException {
 			deleteDocument(icatId);
 			addDocument(document);
 		}
@@ -311,8 +341,9 @@ public class Lucene {
 		 * @param entityName The name of the entities being committed. Only used for
 		 *                   debug logging.
 		 * @throws IOException
+		 * @throws LuceneException If the IndexWriter is closed
 		 */
-		public void commit(String command, String entityName) throws IOException {
+		public void commit(String command, String entityName) throws IOException, LuceneException {
 			for (ShardBucket shardBucket : shardList) {
 				int cached = shardBucket.commit();
 				if (cached != 0) {
@@ -332,8 +363,10 @@ public class Lucene {
 		public void close() throws IOException {
 			for (ShardBucket shardBucket : shardList) {
 				shardBucket.searcherManager.close();
-				shardBucket.indexWriter.commit();
-				shardBucket.indexWriter.close();
+				if (shardBucket.indexWriter.isOpen()) {
+					shardBucket.indexWriter.commit();
+					shardBucket.indexWriter.close();
+				}
 				shardBucket.directory.close();
 			}
 		}
@@ -354,10 +387,12 @@ public class Lucene {
 		 * 
 		 * @return The ShardBucket that the relevant Document is/should be indexed in.
 		 * @throws IOException
+		 * @throws LuceneException If the IndexWriter is closed
 		 */
-		public ShardBucket routeShard() throws IOException {
+		public ShardBucket routeShard() throws IOException, LuceneException {
 			ShardBucket shardBucket = getCurrentShardBucket();
 			if (shardBucket.documentCount.get() >= luceneMaxShardSize) {
+				shardBucket.ensureOpen();
 				shardBucket.indexWriter.commit();
 				shardBucket = buildShardBucket(shardList.size());
 			}
@@ -446,6 +481,7 @@ public class Lucene {
 			}
 			count = operations.size();
 		} catch (IOException e) {
+			logger.error("IOException while attempting to modify document(s)", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 		logger.debug("Modified {} documents", count);
@@ -474,6 +510,7 @@ public class Lucene {
 			logger.error("Could not parse JSON from {}", value);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		} catch (IOException e) {
+			logger.error("IOException while attempting to add document(s)", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 		logger.debug("Added {} {} documents", documents.size(), entityName);
@@ -495,6 +532,7 @@ public class Lucene {
 			Files.walk(luceneDirectory, FileVisitOption.FOLLOW_LINKS).sorted(Comparator.reverseOrder())
 					.filter(f -> !luceneDirectory.equals(f)).map(java.nio.file.Path::toFile).forEach(File::delete);
 		} catch (IOException e) {
+			logger.error("IOException while attempting to clear", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 
@@ -519,6 +557,7 @@ public class Lucene {
 				}
 			}
 		} catch (IOException e) {
+			logger.error("IOException while attempting to commit", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -571,9 +610,10 @@ public class Lucene {
 	 * @param entityId       Icat id of entity to update as a JsonNumber.
 	 * @param index          Index (entity) to update.
 	 * @throws IOException
+	 * @throws LuceneException If the IndexWriter is closed
 	 */
 	private void aggregateFileSize(long sizeToAdd, long sizeToSubtract, long deltaFileCount, JsonNumber entityId,
-			String index) throws IOException {
+			String index) throws IOException, LuceneException {
 		if (entityId != null) {
 			aggregateFileSize(sizeToAdd, sizeToSubtract, deltaFileCount, entityId.longValueExact(), index);
 		}
@@ -592,9 +632,10 @@ public class Lucene {
 	 * @param entityId       Icat id of entity to update as a long.
 	 * @param index          Index (entity) to update.
 	 * @throws IOException
+	 * @throws LuceneException If the IndexWriter is closed
 	 */
 	private void aggregateFileSize(long sizeToAdd, long sizeToSubtract, long deltaFileCount, long entityId,
-			String index) throws IOException {
+			String index) throws IOException, LuceneException {
 		long deltaFileSize = sizeToAdd - sizeToSubtract;
 		if (deltaFileSize != 0 || deltaFileCount != 0) {
 			IndexBucket indexBucket = indexBuckets.computeIfAbsent(index, k -> new IndexBucket(k));
@@ -766,6 +807,7 @@ public class Lucene {
 					shardBucket.indexWriter.deleteDocuments(idQuery);
 				}
 			} catch (IOException e) {
+				logger.error("IOException while attempting to delete document(s)", e);
 				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 			}
 		}
@@ -921,6 +963,7 @@ public class Lucene {
 					indexBuckets.computeIfAbsent(name.toLowerCase(), k -> new IndexBucket(k))
 							.releaseSearchers(subReaders);
 				} catch (IOException e) {
+					logger.error("IOException while attempting to freeSearcher", e);
 					throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 				}
 			}
@@ -1136,6 +1179,7 @@ public class Lucene {
 				}
 			}
 		} catch (IOException e) {
+			logger.error("IOException while attempting to lock", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -1699,6 +1743,7 @@ public class Lucene {
 		try {
 			bucket.commit("Unlock", entityName);
 		} catch (IOException e) {
+			logger.error("IOException while attempting to unlock", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
