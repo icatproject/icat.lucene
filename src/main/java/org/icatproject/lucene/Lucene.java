@@ -481,6 +481,7 @@ public class Lucene {
 			}
 			count = operations.size();
 		} catch (IOException e) {
+			logger.error("IOException while attempting to modify document(s)", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 		logger.debug("Modified {} documents", count);
@@ -509,6 +510,7 @@ public class Lucene {
 			logger.error("Could not parse JSON from {}", value);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		} catch (IOException e) {
+			logger.error("IOException while attempting to add document(s)", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 		logger.debug("Added {} {} documents", documents.size(), entityName);
@@ -530,6 +532,7 @@ public class Lucene {
 			Files.walk(luceneDirectory, FileVisitOption.FOLLOW_LINKS).sorted(Comparator.reverseOrder())
 					.filter(f -> !luceneDirectory.equals(f)).map(java.nio.file.Path::toFile).forEach(File::delete);
 		} catch (IOException e) {
+			logger.error("IOException while attempting to clear", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 
@@ -554,6 +557,7 @@ public class Lucene {
 				}
 			}
 		} catch (IOException e) {
+			logger.error("IOException while attempting to commit", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -803,6 +807,7 @@ public class Lucene {
 					shardBucket.indexWriter.deleteDocuments(idQuery);
 				}
 			} catch (IOException e) {
+				logger.error("IOException while attempting to delete document(s)", e);
 				throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 			}
 		}
@@ -958,6 +963,7 @@ public class Lucene {
 					indexBuckets.computeIfAbsent(name.toLowerCase(), k -> new IndexBucket(k))
 							.releaseSearchers(subReaders);
 				} catch (IOException e) {
+					logger.error("IOException while attempting to freeSearcher", e);
 					throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 				}
 			}
@@ -1173,6 +1179,7 @@ public class Lucene {
 				}
 			}
 		} catch (IOException e) {
+			logger.error("IOException while attempting to lock", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
@@ -1736,6 +1743,7 @@ public class Lucene {
 		try {
 			bucket.commit("Unlock", entityName);
 		} catch (IOException e) {
+			logger.error("IOException while attempting to unlock", e);
 			throw new LuceneException(HttpURLConnection.HTTP_INTERNAL_ERROR, e.getMessage());
 		}
 	}
