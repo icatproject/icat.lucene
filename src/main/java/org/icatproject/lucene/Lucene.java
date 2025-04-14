@@ -387,7 +387,7 @@ public class Lucene {
 
 	static final Logger logger = LoggerFactory.getLogger(Lucene.class);
 	private static final Marker fatal = MarkerFactory.getMarker("FATAL");
-	private static final IcatAnalyzer analyzer = new IcatAnalyzer();
+	private static final IcatSynonymAnalyzer analyzer = new IcatSynonymAnalyzer();
 
 	private final FacetsConfig facetsConfig = new FacetsConfig();
 
