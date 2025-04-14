@@ -83,6 +83,7 @@ import org.apache.lucene.search.TopFieldCollector;
 import org.apache.lucene.search.TopFieldDocs;
 import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.RAFDirectory;
 import org.apache.lucene.util.Counter;
 import org.apache.lucene.util.NumericUtils;
 import org.icatproject.lucene.DocumentMapping.ParentRelationship;
@@ -120,7 +121,10 @@ public class Lucene {
 		 * @throws IOException
 		 */
 		public ShardBucket(java.nio.file.Path shardPath) throws IOException {
-			directory = FSDirectory.open(shardPath);
+			// Use RAFDirectory and an lock implementation that can tolerate interrupts
+			AsyncFSLockFactory lockFactory = AsyncFSLockFactory.INSTANCE;
+			directory = new RAFDirectory(shardPath, lockFactory);
+			logger.info("RAFDirectory opened for {}", shardPath);
 			IndexWriterConfig config = new IndexWriterConfig(analyzer);
 			indexWriter = new IndexWriter(directory, config);
 			String[] files = directory.listAll();
