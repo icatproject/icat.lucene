@@ -30,6 +30,7 @@ import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetCounts;
 import org.apache.lucene.facet.sortedset.SortedSetDocValuesFacetField;
 import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.StringField;
+import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -133,6 +134,36 @@ public class TestLucene {
 
 		assertEquals(24, n);
 		assertEquals(" h hydrogen he helium li lithium beryllium be boron b neon ne ioniz ionis tof time of flight techniqu arp angl resolv photoemiss spectroscopi", newString);
+	}
+
+	/**
+	 * Test that IcatSynonymAnalyzer handles synonym injection within phrases
+	 */
+	@Test
+	public void testIcatSynonymAnalyzerPhrase() throws Exception {
+		Analyzer analyzer = new IcatSynonymAnalyzer();
+		StandardQueryParser parser = new StandardQueryParser();
+		StandardQueryConfigHandler qpConf = (StandardQueryConfigHandler) parser.getQueryConfigHandler();
+		qpConf.set(ConfigurationKeys.ANALYZER, analyzer);
+
+		Path tmpLuceneDir = Files.createTempDirectory("lucene");
+		FSDirectory datafileDirectory = FSDirectory.open(tmpLuceneDir.resolve("Datafile"));
+		IndexWriterConfig config = new IndexWriterConfig(analyzer);
+		config.setOpenMode(OpenMode.CREATE);
+		IndexWriter datafileWriter = new IndexWriter(datafileDirectory, config);
+		Document doc = new Document();
+		doc.add(new TextField("location", "/path/to/data/mr/file.txt", Store.YES));
+		datafileWriter.addDocument(doc);
+		datafileWriter.close();
+
+		Query query = parser.parse("location:\"/path/to/data/mr/file.txt\"", null);
+		IndexSearcher datafileSearcher = new IndexSearcher(DirectoryReader.open(datafileDirectory));
+		TopDocs topDocs = datafileSearcher.search(query, 1);
+
+		assertEquals("location:\"path ? data (mr molecular) replac file.txt\"", query.toString());
+		assertEquals(topDocs.totalHits.value, 1L);
+		Document document = datafileSearcher.doc(topDocs.scoreDocs[0].doc);
+		assertEquals("/path/to/data/mr/file.txt", document.get("location"));
 	}
 
 	/**
