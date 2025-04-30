@@ -1872,14 +1872,14 @@ public class Lucene {
 						case STRING:
 							String newString = newJson.getString(childFieldName, null);
 							if (!newString.equals(oldValue)) {
-								logger.trace("{}: old={} new={}", childFieldName, oldValue, newString);
+								logger.info("Will cascade update of {}[_id={}].{} to {} [ {} -> {} ]", index, childId, childFieldName, lowerCaseParentName, oldValue, newString);
 								updateRequired = true;
 							}
 							break;
 						default:
 							String newValue = newJson.get(childFieldName).toString();
 							if (!newValue.equals(oldValue)) {
-								logger.trace("{}: old={} new={}", childFieldName, oldValue, newValue);
+								logger.info("Will cascade update of {}[_id={}].{} to {} [ {} -> {} ]", index, childId, childFieldName, lowerCaseParentName, oldValue, newValue);
 								updateRequired = true;
 							}
 							break;
