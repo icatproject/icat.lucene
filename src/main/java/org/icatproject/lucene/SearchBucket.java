@@ -168,12 +168,14 @@ public class SearchBucket {
      * @param query Any Lucene Query
      * @return The same query but with the text of any WildcardQueries lowercased.
      */
-    private Query lowercaseWildcardQueries(Query query) {
+    public static Query lowercaseWildcardQueries(Query query) {
         if (query instanceof WildcardQuery) {
             Term term = ((WildcardQuery) query).getTerm();
             String field = term.field();
-            String text = term.text();
-            return new WildcardQuery(new Term(field, text.toLowerCase()));
+            if (!field.endsWith(".exact")) {
+                String text = term.text();
+                return new WildcardQuery(new Term(field, text.toLowerCase()));
+            }
         } else if (query instanceof PrefixQuery) {
             Term term = ((PrefixQuery) query).getPrefix();
             String field = term.field();
@@ -187,9 +189,18 @@ public class SearchBucket {
                 builder.add(processedNestedQuery, clause.getOccur());
             }
             return builder.build();
-        } else {
-            return query;
         }
+        return query;
+    }
+
+    /**
+     * @param query String which may contain unescaped / characters
+     * @return String where all / characters are escaped
+     */
+    public static String escapePath(String query) {
+        // \\\\ represents a single \ in the string
+        // escaped once for regex patterns \ -> \\ and once again for Java Strings \\ -> \\\\
+        return query.replaceAll("\\\\?/", "\\\\/");
     }
 
     private void parseDatafileQuery(String searchAfter, JsonObject jsonQuery)
@@ -205,7 +216,7 @@ public class SearchBucket {
 
         String text = jsonQuery.getString("text", null);
         if (text != null) {
-            Query parsedQuery = DocumentMapping.datafileParser.parse(text, null);
+            Query parsedQuery = DocumentMapping.datafileParser.parse(escapePath(text), null);
             Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
             luceneQuery.add(lowercasedQuery, Occur.MUST);
         }
@@ -238,7 +249,7 @@ public class SearchBucket {
 
         String text = jsonQuery.getString("text", null);
         if (text != null) {
-            Query parsedQuery = DocumentMapping.datasetParser.parse(text, null);
+            Query parsedQuery = DocumentMapping.datasetParser.parse(escapePath(text), null);
             Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
             luceneQuery.add(lowercasedQuery, Occur.MUST);
         }
@@ -271,6 +282,7 @@ public class SearchBucket {
 
         String text = jsonQuery.getString("text", null);
         if (text != null) {
+            text = escapePath(text);
             Builder textBuilder = new BooleanQuery.Builder();
             Query parsedQuery = DocumentMapping.investigationParser.parse(text, null);
             Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);

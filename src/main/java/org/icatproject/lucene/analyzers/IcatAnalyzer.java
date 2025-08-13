@@ -1,4 +1,4 @@
-package org.icatproject.lucene;
+package org.icatproject.lucene.analyzers;
 
 import java.util.Arrays;
 import java.util.List;

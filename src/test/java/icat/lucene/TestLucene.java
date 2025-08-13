@@ -51,13 +51,16 @@ import org.apache.lucene.search.join.JoinUtil;
 import org.apache.lucene.search.join.ScoreMode;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
-import org.icatproject.lucene.IcatAnalyzer;
-import org.icatproject.lucene.IcatSynonymAnalyzer;
+import org.icatproject.lucene.DocumentMapping;
+import org.icatproject.lucene.Field;
 import org.icatproject.lucene.Lucene;
 import org.icatproject.lucene.SearchBucket;
 import org.icatproject.lucene.Lucene.ShardBucket;
 import org.icatproject.lucene.SearchBucket.SearchType;
+import org.icatproject.lucene.analyzers.IcatAnalyzer;
+import org.icatproject.lucene.analyzers.IcatSynonymAnalyzer;
 import org.icatproject.lucene.exceptions.LuceneException;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import jakarta.json.Json;
@@ -353,6 +356,65 @@ public class TestLucene {
 		checkQuery(lucene, "name:XX03RG9MTD1*", "+name:xx03rg9mtd1*");
 		checkQuery(lucene, "name:XX03RG9MTD1? name:processing", "+(name:xx03rg9mtd1? name:process)");
 		checkQuery(lucene, "+name:XX03RG9MTD1? -name:processing", "+(+name:xx03rg9mtd1? -name:process)");
+	}
+
+	@Test
+	public void testLocationFields() throws IOException, QueryNodeException {
+		Lucene lucene = new Lucene();
+		Path tmpLuceneDir = Files.createTempDirectory("lucene");
+		FSDirectory datafileDirectory = FSDirectory.open(tmpLuceneDir.resolve("Datafile"));
+		IndexWriterConfig config = new IndexWriterConfig(Lucene.analyzerWrapper);
+		config.setOpenMode(OpenMode.CREATE);
+		List<String> locations = Arrays.asList(
+				"/dls/i00/data/2000/ab00000-0/screening/ABC/AB00/AB00_0_0000.txt",
+				"/dls/i00/data/2000/ab00000-0/screening/ABC/AB00/AB00_0_0000.csv",
+				"/dls/i00/data/2000/cd00000-0/screening/DEF/DE00/DE00_0_0000.txt",
+				"/dls/i00/data/2000/cd00000-0/screening/DEF/DE00/DE00_0_0000.csv");
+
+		try (IndexWriter datafileWriter = new IndexWriter(datafileDirectory, config)) {
+			for (String location : locations) {
+				Document document = new Document();
+				Field field = new Field("location", location, lucene.facetFields);
+				field.addToDocument(document);
+				datafileWriter.addDocument(document);
+			}
+		}
+
+		IndexSearcher datafileSearcher = new IndexSearcher(DirectoryReader.open(datafileDirectory));
+		// Check the default fields of location, location.fileName are case insensitive
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "Screening", 4L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "abc", 2L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "CSV", 2L);
+		// Check that wildcards can be used with the default fields
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "A*C", 2L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "d?f", 2L);
+		// Check that paths work with the default fields
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+\"AB00/AB00_0_0000.txt\"", 1L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+/dls/i00/data/2000/ +(ab00000-0 ab00000-1)", 2L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, " +(/dls/i00/data/2000/ab00000-0 /dls/i00/data/2000/cd00000-0)", 4L);
+		// Check that partial path matches the hierarchy regardless of whether and how the / is escaped
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:\"/dls/i00/data\"", 4L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:\\/dls\\/i00\\/data", 4L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:/dls/i00/data", 4L);
+		// Check that path with wildcards matches the hierarchy
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:/dls/*/data/20??/ab*", 2L);
+		// Check location.exact with OR grouping
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+location.exact:/dls/i00/data/2000 +(ab00000-0 ab00000-1)", 2L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:(/dls/i00/data/2000/ab00000-0 /dls/i00/data/2000/cd00000-0)", 4L);
+		// Check location.exact case sensitivity
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:/dls/i00/data/2000/ab00000-0/screening/ABC", 2L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:/dls/i00/data/2000/ab00000-0/screening/abc", 0L);
+		// Exemplar searches
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:(/dls/i00/data/2000/*/screen*/AB00/*.txt /dls/i00/data/2000/*/screen*/DE00/*.txt)", 2L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+location:\"/dls/i00/data/2000\" +location:screen* +location:(AB00 DE00) +location.fileName:txt", 2L);
+		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+\"/dls/i00/data/2000\" +screen* +(AB00 DE00) +txt", 2L);
+	}
+
+	private void checkHits(IndexSearcher searcher, StandardQueryParser parser, String queryString, long expected) throws QueryNodeException, IOException {
+		queryString = SearchBucket.escapePath(queryString);
+		Query query = parser.parse(queryString, null);
+		TopDocs topDocs = searcher.search(SearchBucket.lowercaseWildcardQueries(query), 100);
+		assertEquals(query.toString() + " gave unexpected number of results", expected, topDocs.totalHits.value);
 	}
 
 	private void checkQuery(Lucene lucene, String text, String expected) throws LuceneException, IOException, QueryNodeException {

@@ -45,6 +45,11 @@ import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 
+import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.custom.CustomAnalyzer;
+import org.apache.lucene.analysis.custom.CustomAnalyzer.Builder;
+import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
+import org.apache.lucene.analysis.path.PathHierarchyTokenizerFactory;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.DoublePoint;
 import org.apache.lucene.document.Field.Store;
@@ -88,6 +93,8 @@ import org.apache.lucene.util.Counter;
 import org.apache.lucene.util.NumericUtils;
 import org.icatproject.lucene.DocumentMapping.ParentRelationship;
 import org.icatproject.lucene.SearchBucket.SearchType;
+import org.icatproject.lucene.analyzers.IcatSeparatorAnalyzer;
+import org.icatproject.lucene.analyzers.IcatSynonymAnalyzer;
 import org.icatproject.lucene.exceptions.LuceneException;
 import org.icatproject.utils.CheckedProperties;
 import org.icatproject.utils.IcatUnits;
@@ -125,7 +132,7 @@ public class Lucene {
 			AsyncFSLockFactory lockFactory = AsyncFSLockFactory.INSTANCE;
 			directory = new RAFDirectory(shardPath, lockFactory);
 			logger.info("RAFDirectory opened for {}", shardPath);
-			IndexWriterConfig config = new IndexWriterConfig(analyzer);
+			IndexWriterConfig config = new IndexWriterConfig(analyzerWrapper);
 			indexWriter = new IndexWriter(directory, config);
 			String[] files = directory.listAll();
 			if (files.length == 1 && files[0].equals("write.lock")) {
@@ -201,7 +208,7 @@ public class Lucene {
 		 */
 		public void ensureOpen() throws IOException, LuceneException {
 			if (!indexWriter.isOpen()) {
-				IndexWriterConfig config = new IndexWriterConfig(analyzer);
+				IndexWriterConfig config = new IndexWriterConfig(analyzerWrapper);
 				indexWriter = new IndexWriter(directory, config);
 				searcherManager = new SearcherManager(indexWriter, null);
 				IndexSearcher indexSearcher = searcherManager.acquire();
@@ -426,7 +433,20 @@ public class Lucene {
 
 	static final Logger logger = LoggerFactory.getLogger(Lucene.class);
 	private static final Marker fatal = MarkerFactory.getMarker("FATAL");
-	private static final IcatSynonymAnalyzer analyzer = new IcatSynonymAnalyzer();
+	private static final HashMap<String, Analyzer> analyzerMap = new HashMap<>();
+	static {
+		for (String pathField : DocumentMapping.pathFields) {
+			analyzerMap.put(pathField, new IcatSeparatorAnalyzer("/"));
+			try {
+				Builder builder = CustomAnalyzer.builder().withTokenizer(PathHierarchyTokenizerFactory.class);
+				analyzerMap.put(pathField + ".exact", builder.build());
+			} catch (IOException e) {
+				logger.error("Could not initialize path hierarchy analyzer", e);
+			}
+			analyzerMap.put(pathField + ".fileName", new IcatSeparatorAnalyzer("."));
+		}
+	}
+	public static PerFieldAnalyzerWrapper analyzerWrapper = new PerFieldAnalyzerWrapper(new IcatSynonymAnalyzer(), analyzerMap);
 
 	private final FacetsConfig facetsConfig = new FacetsConfig();
 

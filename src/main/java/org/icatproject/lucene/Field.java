@@ -22,7 +22,7 @@ import org.apache.lucene.util.NumericUtils;
  * Wrapper for the name, value and type (String/Text, long, double) of a field
  * to be added to a Lucene Document.
  */
-class Field {
+public class Field {
 
     private abstract class InnerField {
 
@@ -58,6 +58,13 @@ class Field {
 
             if (DocumentMapping.textFields.contains(name)) {
                 document.add(new TextField(name, value, Store.YES));
+            } else if (DocumentMapping.pathFields.contains(name)) {
+                document.add(new TextField(name, value, Store.YES));
+                document.add(new TextField(name + ".exact", value, Store.NO));
+                int index = value.lastIndexOf("/");
+                if (index != -1) {
+                    document.add(new TextField(name + ".fileName", value.substring(index + 1), Store.NO));
+                }
             } else {
                 document.add(new StringField(name, value, Store.YES));
             }
@@ -137,6 +144,19 @@ class Field {
         } else {
             innerField = new InnerStringField(object.getString(key));
         }
+    }
+
+    /**
+     * Creates a wrapper for a String Field.
+     * 
+     * @param name        Name of the field to be used on the Document
+     * @param value       String value of the field
+     * @param facetFields List of String field names which should be stored as a facetable keyword
+     */
+    public Field(String name, String value, List<String> facetFields) {
+        this.name = name;
+        facetable = facetFields.contains(name);
+        innerField = new InnerStringField(value);
     }
 
     /**
