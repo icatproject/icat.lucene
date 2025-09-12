@@ -30,25 +30,17 @@ public class DocumentMapping {
 		 * @param cascadeDelete If the child is deleted, whether the parent onto which
 		 *                      it is nested should be deleted wholesale or just have
 		 *                      its fields pruned.
-		 * @param fields        Fields that should be updated by this relationship where
-		 *                      the field is the same on parent and child.
+		 * @param fieldMapping  Fields that should be updated by this relationship. The
+		 * 						key and value will be the same for most fields, but for
+		 * 						some they will differ to allow fields to be flattened
+		 * 						across entities (e.g. dataset.name: name).
 		 */
-		public ParentRelationship(String parentName, String joiningField, boolean cascadeDelete, String... fields) {
+		public ParentRelationship(String parentName, String joiningField, boolean cascadeDelete,
+				Map<String, String> fieldMapping) {
 			this.parentName = parentName;
 			this.joiningField = joiningField;
 			this.cascadeDelete = cascadeDelete;
-			fieldMapping = new HashMap<>();
-			for (String field : fields) {
-				fieldMapping.put(field, field);
-			}
-		}
-
-		/**
-		 * @param parentField Name on the parent, such as "dataset.name"
-		 * @param childField  Name on the child, such as "name"
-		 */
-		public void mapField(String parentField, String childField) {
-			fieldMapping.put(parentField, childField);
+			this.fieldMapping = fieldMapping;
 		}
 	}
 
@@ -74,37 +66,54 @@ public class DocumentMapping {
 	public static final Map<String, ParentRelationship[]> relationships = Map.ofEntries(
 			Map.entry("Instrument", new ParentRelationship[] {
 					new ParentRelationship("InvestigationInstrument", "instrument.id", true,
-							"instrument.name", "instrument.fullName") }),
+							Map.of("instrument.name", "instrument.name", "instrument.fullName", "instrument.fullName")) }),
 			Map.entry("User", new ParentRelationship[] {
-					new ParentRelationship("InvestigationUser", "user.id", true, "user.name", "user.fullName"),
-					new ParentRelationship("InstrumentScientist", "user.id", true, "user.name", "user.fullName") }),
+					new ParentRelationship("InvestigationUser", "user.id", true,
+							Map.of("user.name", "user.name", "user.fullName", "user.fullName")),
+					new ParentRelationship("InstrumentScientist", "user.id", true,
+							Map.of("user.name", "user.name", "user.fullName", "user.fullName")) }),
 			Map.entry("Sample", new ParentRelationship[] {
-					new ParentRelationship("Dataset", "sample.id", false, "sample.name", "sample.investigation.id"),
-					new ParentRelationship("Datafile", "sample.id", false, "sample.name", "sample.investigation.id") }),
+					new ParentRelationship("Dataset", "sample.id", false,
+							Map.of("sample.name", "sample.name", "sample.investigation.id", "sample.investigation.id")),
+					new ParentRelationship("Datafile", "sample.id", false,
+							Map.of("sample.name", "sample.name", "sample.investigation.id", "sample.investigation.id")) }),
 			Map.entry("SampleType", new ParentRelationship[] {
-					new ParentRelationship("Sample", "type.id", true, "type.name"),
-					new ParentRelationship("Dataset", "sample.type.id", false, "sample.type.name"),
-					new ParentRelationship("Datafile", "sample.type.id", false, "sample.type.name") }),
+					new ParentRelationship("Sample", "type.id", true, Map.of("type.name", "type.name")),
+					new ParentRelationship("Dataset", "sample.type.id", false,
+							Map.of("sample.type.name", "sample.type.name")),
+					new ParentRelationship("Datafile", "sample.type.id", false,
+							Map.of("sample.type.name", "sample.type.name")) }),
 			Map.entry("InvestigationType", new ParentRelationship[] {
-					new ParentRelationship("Investigation", "type.id", true, "type.name") }),
+					new ParentRelationship("Investigation", "type.id", true, Map.of("type.name", "type.name")) }),
 			Map.entry("DatasetType", new ParentRelationship[] {
-					new ParentRelationship("Dataset", "type.id", true, "type.name") }),
+					new ParentRelationship("Dataset", "type.id", true, Map.of("type.name", "type.name")) }),
 			Map.entry("DatafileFormat", new ParentRelationship[] {
-					new ParentRelationship("Datafile", "datafileFormat.id", false, "datafileFormat.name") }),
+					new ParentRelationship("Datafile", "datafileFormat.id", false,
+							Map.of("datafileFormat.name", "datafileFormat.name")) }),
 			Map.entry("Facility", new ParentRelationship[] {
-					new ParentRelationship("Investigation", "facility.id", true, "facility.name") }),
+					new ParentRelationship("Investigation", "facility.id", true,
+							Map.of("facility.name", "facility.name")) }),
 			Map.entry("ParameterType", new ParentRelationship[] {
-					new ParentRelationship("DatafileParameter", "type.id", true, "type.name", "type.units"),
-					new ParentRelationship("DatasetParameter", "type.id", true, "type.name", "type.units"),
-					new ParentRelationship("InvestigationParameter", "type.id", true, "type.name", "type.units"),
-					new ParentRelationship("SampleParameter", "type.id", true, "type.name", "type.units") }),
+					new ParentRelationship("DatafileParameter", "type.id", true,
+							Map.of("type.name", "type.name", "type.units", "type.units")),
+					new ParentRelationship("DatasetParameter", "type.id", true,
+							Map.of("type.name", "type.name", "type.units", "type.units")),
+					new ParentRelationship("InvestigationParameter", "type.id", true,
+							Map.of("type.name", "type.name", "type.units", "type.units")),
+					new ParentRelationship("SampleParameter", "type.id", true,
+							Map.of("type.name", "type.name", "type.units", "type.units")) }),
 			Map.entry("Technique", new ParentRelationship[] {
 					new ParentRelationship("DatasetTechnique", "technique.id", true,
-							"technique.name", "technique.description", "technique.pid") }),
+							Map.of("technique.name", "technique.name", "technique.description", "technique.description",
+									"technique.pid", "technique.pid")) }),
 			Map.entry("Investigation", new ParentRelationship[] {
-					new ParentRelationship("Dataset", "investigation.id", true, "visitId"),
-					new ParentRelationship("Datafile", "investigation.id", true, "visitId") }),
-			Map.entry("Dataset", new ParentRelationship[] { new ParentRelationship("Datafile", "dataset.id", true) }));
+					new ParentRelationship("Dataset", "investigation.id", true,
+							Map.of("visitId", "visitId", "investigation.name", "name", "investigation.title", "title",
+									"investigation.startDate", "startDate")),
+					new ParentRelationship("Datafile", "investigation.id", true,
+							Map.of("visitId", "visitId", "investigation.name", "name")) }),
+			Map.entry("Dataset", new ParentRelationship[] {
+					new ParentRelationship("Datafile", "dataset.id", true, Map.of("dataset.name", "name")) }));
 
 	public static final StandardQueryParser genericParser = buildParser();
 	public static final StandardQueryParser datafileParser = buildParser("name", "description", "location",
@@ -114,19 +123,6 @@ public class DocumentMapping {
 	public static final StandardQueryParser investigationParser = buildParser("name", "visitId", "title", "summary",
 			"facility.name", "type.name", "doi");
 	public static final StandardQueryParser sampleParser = buildParser("sample.name", "sample.type.name");
-
-	static {
-		ParentRelationship investigationDatasetRelationship = relationships.get("Investigation")[0];
-		investigationDatasetRelationship.mapField("investigation.name", "name");
-		investigationDatasetRelationship.mapField("investigation.title", "title");
-		investigationDatasetRelationship.mapField("investigation.startDate", "startDate");
-
-		ParentRelationship investigationDatafileRelationship = relationships.get("Investigation")[1];
-		investigationDatafileRelationship.mapField("investigation.name", "name");
-
-		ParentRelationship datasetDatafileRelationship = relationships.get("Dataset")[0];
-		datasetDatafileRelationship.mapField("dataset.name", "name");
-	}
 
 	private static StandardQueryParser buildParser(String... defaultFields) {
 		HashMap<String, Analyzer> analyzerMap = new HashMap<>();
