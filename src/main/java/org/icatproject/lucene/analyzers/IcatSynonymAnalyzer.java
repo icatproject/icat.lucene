@@ -1,4 +1,4 @@
-package org.icatproject.lucene;
+package org.icatproject.lucene.analyzers;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
