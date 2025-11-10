@@ -1177,6 +1177,7 @@ public class Lucene {
 				IndexSearcher searcher = shardBucket.searcherManager.acquire();
 				try {
 					Query query;
+					Sort sort = new Sort(new SortedNumericSortField("id", Type.LONG, true));
 					if (minId == null && maxId == null) {
 						query = new MatchAllDocsQuery();
 					} else {
@@ -1188,7 +1189,7 @@ public class Lucene {
 						}
 						query = LongPoint.newRangeQuery("id", minId + 1, maxId);
 					}
-					TopDocs topDoc = searcher.search(query, 1);
+					TopDocs topDoc = searcher.search(query, 1, sort);
 					if (topDoc.scoreDocs.length != 0) {
 						// If we have any results in the populating range, unlock and throw
 						bucket.locked.compareAndSet(true, false);
