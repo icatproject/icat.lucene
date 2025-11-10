@@ -2,7 +2,8 @@
 # are marked with '!'
 
 directory      = ${HOME}/data/search
-commitSeconds  = 5
+# A value of 0 will disable automatic commits and rely on icat.server to explicitly call commit after creating new documents
+commitSeconds  = 0
 # Lucene limits the max number of documents in an index to Integer.MAX_VALUE - 128
 maxShardSize   = 2147483519
 ip             = 127.0.0.1/32
