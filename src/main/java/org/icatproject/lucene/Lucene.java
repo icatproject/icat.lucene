@@ -1626,7 +1626,7 @@ public class Lucene {
 	 * @param json Key value pairs of fields.
 	 * @return Lucene Document.
 	 */
-	private Document parseDocument(JsonObject json) {
+	public Document parseDocument(JsonObject json) {
 		Document document = new Document();
 		for (String key : json.keySet()) {
 			Field field = new Field(json, key, key, facetFields);
@@ -1678,6 +1678,9 @@ public class Lucene {
 			// If we aren't dealing with the desired numeric field don't convert
 			return;
 		}
+		System.out.println(numericalValue);
+		System.out.println(unitString);
+		System.out.println(icatUnits);
 		logger.trace("Attempting to convert {} {}", numericalValue, unitString);
 		Value value = icatUnits.convertValueToSiUnits(numericalValue, unitString);
 		if (value != null) {
