@@ -54,7 +54,9 @@
 
 		<dt>commitSeconds</dt>
 		<dd>the interval in seconds between committing lucene changes to
-			disk and updating the index.</dd>
+			disk and updating the index. Automatic commits can be disabled by setting to
+			0, in which case icat.server will need to explicitly commit after creating a
+			batch of documents.</dd>
 
 		<dt>maxShardSize</dt>
 		<dd>The maximum number of documents to store in a single index before "sharding"

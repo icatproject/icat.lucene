@@ -1061,7 +1061,7 @@ public class Lucene {
 				throw new Exception(luceneDirectory + " is not a directory");
 			}
 
-			commitSeconds = props.getPositiveInt("commitSeconds");
+			commitSeconds = props.getNonNegativeInt("commitSeconds");
 			luceneCommitMillis = commitSeconds * 1000;
 			luceneMaxShardSize = Math.min(props.getPositiveLong("maxShardSize"), Long.valueOf(Integer.MAX_VALUE - 128));
 			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds")
@@ -1092,8 +1092,10 @@ public class Lucene {
 	 * Starts a timer and schedules regular commits of the IndexWriter.
 	 */
 	private void initTimer() {
-		timer = new Timer("LuceneCommitTimer");
-		timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
+		if (luceneCommitMillis > 0) {
+			timer = new Timer("LuceneCommitTimer");
+			timer.schedule(new CommitTimerTask(), luceneCommitMillis, luceneCommitMillis);
+		}
 	}
 
 	class CommitTimerTask extends TimerTask {
