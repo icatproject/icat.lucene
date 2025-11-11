@@ -1678,9 +1678,6 @@ public class Lucene {
 			// If we aren't dealing with the desired numeric field don't convert
 			return;
 		}
-		System.out.println(numericalValue);
-		System.out.println(unitString);
-		System.out.println(icatUnits);
 		logger.trace("Attempting to convert {} {}", numericalValue, unitString);
 		Value value = icatUnits.convertValueToSiUnits(numericalValue, unitString);
 		if (value != null) {
