@@ -35,6 +35,7 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexWriterConfig.OpenMode;
+import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.flexible.core.QueryNodeException;
 import org.apache.lucene.queryparser.flexible.standard.StandardQueryParser;
@@ -60,7 +61,7 @@ import org.icatproject.lucene.SearchBucket.SearchType;
 import org.icatproject.lucene.analyzers.IcatAnalyzer;
 import org.icatproject.lucene.analyzers.IcatSynonymAnalyzer;
 import org.icatproject.lucene.exceptions.LuceneException;
-import org.junit.Ignore;
+import org.icatproject.utils.IcatUnits;
 import org.junit.Test;
 
 import jakarta.json.Json;
@@ -408,6 +409,24 @@ public class TestLucene {
 		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:(/dls/i00/data/2000/*/screen*/AB00/*.txt /dls/i00/data/2000/*/screen*/DE00/*.txt)", 2L);
 		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+location:\"/dls/i00/data/2000\" +location:screen* +location:(AB00 DE00) +location.fileName:txt", 2L);
 		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+\"/dls/i00/data/2000\" +screen* +(AB00 DE00) +txt", 2L);
+	}
+
+	@Test
+	public void testParseDocument() {
+		// Ensure that we encode units correctly when SI conversion fails
+		Lucene lucene = new Lucene();
+		lucene.icatUnits = new IcatUnits();
+		JsonObjectBuilder builder = Json.createObjectBuilder();
+		builder.add("type.units", "N/A");
+		builder.add("numericValue", 1.);
+		Document document = lucene.parseDocument(builder.build());
+		assertEquals(4, document.getFields().size());
+		assertEquals("N/A", document.getField("type.units").stringValue());
+		// Unlike strings, numbers are represented by different fields for different purposes
+		IndexableField[] fields = document.getFields("numericValue");
+		assertEquals(4607182418800017408L, fields[0].numericValue().longValue());  // For faceting, the double value is encoded as a long
+		assertEquals(1., fields[1].numericValue().doubleValue(), 0);  // For querying, encoded as double
+		assertEquals(1., fields[2].numericValue().doubleValue(), 0);  // Stored value for returning documents, encoded as a double
 	}
 
 	private void checkHits(IndexSearcher searcher, StandardQueryParser parser, String queryString, long expected) throws QueryNodeException, IOException {
