@@ -48,12 +48,12 @@ public class DocumentMapping {
 			"rangeBottom", "rangeBottomSI");
 	public static final Set<String> longFields = Set.of("date", "startDate", "endDate", "dateTimeValue",
 			"investigation.startDate", "fileSize", "fileCount", "datafile.id", "datafileFormat.id", "dataset.id",
-			"facility.id", "facilityCycle.id", "investigation.id", "instrument.id", "id", "sample.id",
-			"sample.investigation.id", "sample.type.id", "technique.id", "type.id", "user.id");
+			"facility.id", "facilityCycle.id", "investigation.id", "instrument.id", "id", "sample.id", "sample.type.id",
+			"technique.id", "type.id", "user.id");
 	public static final Set<String> sortFields = Set.of("datafile.id", "datafileFormat.id", "dataset.id", "facility.id",
-			"facilityCycle.id", "investigation.id", "instrument.id", "id", "sample.id", "sample.investigation.id",
-			"technique.id", "type.id", "user.id", "date", "name", "stringValue", "dateTimeValue", "numericValue",
-			"numericValueSI", "fileSize", "fileCount");
+			"facilityCycle.id", "investigation.id", "instrument.id", "id", "sample.id", "technique.id", "type.id",
+			"user.id", "date", "name", "stringValue", "dateTimeValue", "numericValue", "numericValueSI", "fileSize",
+			"fileCount");
 	public static final Set<String> textFields = Set.of("name", "visitId", "description", "dataset.name",
 			"investigation.name", "instrument.name", "instrument.fullName", "datafileFormat.name", "sample.name",
 			"sample.type.name", "technique.name", "technique.description", "technique.pid", "title", "summary",
@@ -62,7 +62,7 @@ public class DocumentMapping {
 	public static final Set<String> indexedEntities = Set.of("Datafile", "Dataset", "Investigation",
 			"DatafileParameter", "DatasetParameter", "DatasetTechnique", "InstrumentScientist",
 			"InvestigationFacilityCycle", "InvestigationInstrument", "InvestigationParameter", "InvestigationUser",
-			"Sample", "SampleParameter");
+			"InvestigationSample", "SampleParameter");
 	public static final Map<String, ParentRelationship[]> relationships = Map.ofEntries(
 			Map.entry("Instrument", new ParentRelationship[] {
 					new ParentRelationship("InvestigationInstrument", "instrument.id", true,
@@ -73,10 +73,12 @@ public class DocumentMapping {
 					new ParentRelationship("InstrumentScientist", "user.id", true,
 							Map.of("user.name", "user.name", "user.fullName", "user.fullName")) }),
 			Map.entry("Sample", new ParentRelationship[] {
+					new ParentRelationship("InvestigationSample", "sample.id", false,
+							Map.of("sample.name", "sample.name")),
 					new ParentRelationship("Dataset", "sample.id", false,
-							Map.of("sample.name", "sample.name", "sample.investigation.id", "sample.investigation.id")),
+							Map.of("sample.name", "sample.name")),
 					new ParentRelationship("Datafile", "sample.id", false,
-							Map.of("sample.name", "sample.name", "sample.investigation.id", "sample.investigation.id")) }),
+							Map.of("sample.name", "sample.name")) }),
 			Map.entry("SampleType", new ParentRelationship[] {
 					new ParentRelationship("Sample", "type.id", true, Map.of("type.name", "type.name")),
 					new ParentRelationship("Dataset", "sample.type.id", false,

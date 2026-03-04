@@ -288,10 +288,10 @@ public class SearchBucket {
             Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
             textBuilder.add(lowercasedQuery, Occur.SHOULD);
 
-            IndexSearcher sampleSearcher = lucene.getSearcher(searcherMap, "Sample");
+            IndexSearcher sampleSearcher = lucene.getSearcher(searcherMap, "InvestigationSample");
             parsedQuery = DocumentMapping.sampleParser.parse(text, null);
             lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
-            Query joinedSampleQuery = JoinUtil.createJoinQuery("sample.investigation.id", false, "id", Long.class,
+            Query joinedSampleQuery = JoinUtil.createJoinQuery("investigation.id", false, "id", Long.class,
                     lowercasedQuery, sampleSearcher, ScoreMode.Avg);
             textBuilder.add(joinedSampleQuery, Occur.SHOULD);
             luceneQuery.add(textBuilder.build(), Occur.MUST);
@@ -399,7 +399,7 @@ public class SearchBucket {
                     IndexSearcher nestedSearcher = lucene.getSearcher(searcherMap, filterTarget);
                     Query nestedQuery;
                     if (filterTarget.equals("sample") && target.equals("investigation")) {
-                        nestedQuery = JoinUtil.createJoinQuery("sample.investigation.id", false, "id", Long.class,
+                        nestedQuery = JoinUtil.createJoinQuery("investigation.id", false, "id", Long.class,
                                 dimensionQuery, nestedSearcher, ScoreMode.None);
                     } else if (filterTarget.toLowerCase().equals("investigationinstrument") && !target.equals("investigation")) {
                         nestedQuery = JoinUtil.createJoinQuery("investigation.id", false, "investigation.id", Long.class, dimensionQuery,
@@ -463,8 +463,8 @@ public class SearchBucket {
                     } else if (fld.equals("sampleparameter") && target.equals("investigation")) {
                         Query sampleQuery = JoinUtil.createJoinQuery("sample.id", false, "sample.id", Long.class,
                                 nestedBoolBuilder.build(), nestedSearcher, ScoreMode.None);
-                        return JoinUtil.createJoinQuery("sample.investigation.id", false, "id", Long.class, sampleQuery,
-                                lucene.getSearcher(searcherMap, "sample"), ScoreMode.None);
+                        return JoinUtil.createJoinQuery("investigation.id", false, "id", Long.class, sampleQuery,
+                                lucene.getSearcher(searcherMap, "InvestigationSample"), ScoreMode.None);
                     } else {
                         return JoinUtil.createJoinQuery(target + ".id", false, "id", Long.class,
                                 nestedBoolBuilder.build(), nestedSearcher, ScoreMode.None);
