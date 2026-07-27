@@ -17,6 +17,7 @@ import java.util.Map;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field.Store;
@@ -364,7 +365,9 @@ public class TestLucene {
 		Lucene lucene = new Lucene();
 		Path tmpLuceneDir = Files.createTempDirectory("lucene");
 		FSDirectory datafileDirectory = FSDirectory.open(tmpLuceneDir.resolve("Datafile"));
-		IndexWriterConfig config = new IndexWriterConfig(Lucene.analyzerWrapper);
+		HashMap<String, Analyzer> analyzerMap = new HashMap<>();
+		Lucene.populateAnalyzerMap(analyzerMap, "/");
+		IndexWriterConfig config = new IndexWriterConfig(new PerFieldAnalyzerWrapper(new IcatSynonymAnalyzer(), analyzerMap));
 		config.setOpenMode(OpenMode.CREATE);
 		List<String> locations = Arrays.asList(
 				"/dls/i00/data/2000/ab00000-0/screening/ABC/AB00/AB00_0_0000.txt",
@@ -375,40 +378,94 @@ public class TestLucene {
 		try (IndexWriter datafileWriter = new IndexWriter(datafileDirectory, config)) {
 			for (String location : locations) {
 				Document document = new Document();
-				Field field = new Field("location", location, lucene.facetFields);
+				Field field = new Field("location", location, lucene.facetFields, "/");
 				field.addToDocument(document);
 				datafileWriter.addDocument(document);
 			}
 		}
 
 		IndexSearcher datafileSearcher = new IndexSearcher(DirectoryReader.open(datafileDirectory));
+		StandardQueryParser datafileParser = DocumentMapping.getDatafileParser("/");
 		// Check the default fields of location, location.fileName are case insensitive
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "Screening", 4L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "abc", 2L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "CSV", 2L);
+		checkHits(datafileSearcher, datafileParser, "Screening", 4L);
+		checkHits(datafileSearcher, datafileParser, "abc", 2L);
+		checkHits(datafileSearcher, datafileParser, "CSV", 2L);
 		// Check that wildcards can be used with the default fields
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "A*C", 2L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "d?f", 2L);
+		checkHits(datafileSearcher, datafileParser, "A*C", 2L);
+		checkHits(datafileSearcher, datafileParser, "d?f", 2L);
 		// Check that paths work with the default fields
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+\"AB00/AB00_0_0000.txt\"", 1L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+/dls/i00/data/2000/ +(ab00000-0 ab00000-1)", 2L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, " +(/dls/i00/data/2000/ab00000-0 /dls/i00/data/2000/cd00000-0)", 4L);
+		checkHits(datafileSearcher, datafileParser, "+\"AB00/AB00_0_0000.txt\"", 1L);
+		checkHits(datafileSearcher, datafileParser, "+/dls/i00/data/2000/ +(ab00000-0 ab00000-1)", 2L);
+		checkHits(datafileSearcher, datafileParser, " +(/dls/i00/data/2000/ab00000-0 /dls/i00/data/2000/cd00000-0)", 4L);
 		// Check that partial path matches the hierarchy regardless of whether and how the / is escaped
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:\"/dls/i00/data\"", 4L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:\\/dls\\/i00\\/data", 4L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:/dls/i00/data", 4L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:\"/dls/i00/data\"", 4L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:\\/dls\\/i00\\/data", 4L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:/dls/i00/data", 4L);
 		// Check that path with wildcards matches the hierarchy
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:/dls/*/data/20??/ab*", 2L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:/dls/*/data/20??/ab*", 2L);
 		// Check location.exact with OR grouping
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+location.exact:/dls/i00/data/2000 +(ab00000-0 ab00000-1)", 2L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:(/dls/i00/data/2000/ab00000-0 /dls/i00/data/2000/cd00000-0)", 4L);
+		checkHits(datafileSearcher, datafileParser, "+location.exact:/dls/i00/data/2000 +(ab00000-0 ab00000-1)", 2L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:(/dls/i00/data/2000/ab00000-0 /dls/i00/data/2000/cd00000-0)", 4L);
 		// Check location.exact case sensitivity
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:/dls/i00/data/2000/ab00000-0/screening/ABC", 2L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:/dls/i00/data/2000/ab00000-0/screening/abc", 0L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:/dls/i00/data/2000/ab00000-0/screening/ABC", 2L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:/dls/i00/data/2000/ab00000-0/screening/abc", 0L);
 		// Exemplar searches
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "location.exact:(/dls/i00/data/2000/*/screen*/AB00/*.txt /dls/i00/data/2000/*/screen*/DE00/*.txt)", 2L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+location:\"/dls/i00/data/2000\" +location:screen* +location:(AB00 DE00) +location.fileName:txt", 2L);
-		checkHits(datafileSearcher, DocumentMapping.datafileParser, "+\"/dls/i00/data/2000\" +screen* +(AB00 DE00) +txt", 2L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:(/dls/i00/data/2000/*/screen*/AB00/*.txt /dls/i00/data/2000/*/screen*/DE00/*.txt)", 2L);
+		checkHits(datafileSearcher, datafileParser, "+location:\"/dls/i00/data/2000\" +location:screen* +location:(AB00 DE00) +location.fileName:txt", 2L);
+		checkHits(datafileSearcher, datafileParser, "+\"/dls/i00/data/2000\" +screen* +(AB00 DE00) +txt", 2L);
+	}
+
+	@Test
+	public void testWindowsLocationFields() throws IOException, QueryNodeException {
+		Lucene lucene = new Lucene();
+		Path tmpLuceneDir = Files.createTempDirectory("lucene");
+		FSDirectory datafileDirectory = FSDirectory.open(tmpLuceneDir.resolve("Datafile"));
+		HashMap<String, Analyzer> analyzerMap = new HashMap<>();
+		Lucene.populateAnalyzerMap(analyzerMap, "\\");
+		IndexWriterConfig config = new IndexWriterConfig(new PerFieldAnalyzerWrapper(new IcatSynonymAnalyzer(), analyzerMap));
+		config.setOpenMode(OpenMode.CREATE);
+		List<String> locations = Arrays.asList(
+				"\\\\isis\\inst$\\NDXINSTR\\Instrument\\data\\cycle_00_0\\ABC00000.LOG",
+				"\\\\isis\\inst$\\NDXINSTR\\Instrument\\data\\cycle_00_0\\ABC00000.nxs",
+				"\\\\isis\\inst$\\NDXUMENT\\Instrument\\data\\cycle_00_0\\ABC00000.LOG",
+				"\\\\isis\\inst$\\NDXUMENT\\Instrument\\data\\cycle_00_0\\ABC00000.nxs");
+
+		try (IndexWriter datafileWriter = new IndexWriter(datafileDirectory, config)) {
+			for (String location : locations) {
+				Document document = new Document();
+				Field field = new Field("location", location, lucene.facetFields, "\\");
+				field.addToDocument(document);
+				datafileWriter.addDocument(document);
+			}
+		}
+
+		IndexSearcher datafileSearcher = new IndexSearcher(DirectoryReader.open(datafileDirectory));
+		StandardQueryParser datafileParser = DocumentMapping.getDatafileParser("\\");
+		// Check the default fields of location, location.fileName are case insensitive
+		checkHits(datafileSearcher, datafileParser, "instrument", 4L);
+		checkHits(datafileSearcher, datafileParser, "ndxinstr", 2L);
+		checkHits(datafileSearcher, datafileParser, "NXS", 2L);
+		// Check that wildcards can be used with the default fields
+		checkHits(datafileSearcher, datafileParser, "ndx*r", 2L);
+		checkHits(datafileSearcher, datafileParser, "ndxum?nt", 2L);
+		// Check that paths work with the default fields
+		checkHits(datafileSearcher, datafileParser, "+\\\\\\\\isis\\\\inst$ +(NDXINSTR NDXUMENT)", 4L);
+		checkHits(datafileSearcher, datafileParser, "+(\\\\\\\\isis\\\\inst$\\NDXINSTR \\\\\\\\isis\\\\inst$\\\\NDXUMENT)", 4L);
+		// Check that partial path matches the hierarchy regardless of whether quotes are used
+		checkHits(datafileSearcher, datafileParser, "location.exact:\"\\\\\\\\isis\\\\inst$\"", 4L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:\\\\\\\\isis\\\\inst$", 4L);
+		// Check that path with wildcards matches the hierarchy
+		checkHits(datafileSearcher, datafileParser, "location.exact:\\\\\\\\isis\\\\inst*", 4L);
+		// checkHits(datafileSearcher, datafileParser, "location.exact:\\\\\\\\isis\\\\?nst$", 4L);  // This won't work - Can't combine wildcards and `$`?
+		// Check location.exact with OR grouping
+		checkHits(datafileSearcher, datafileParser, "+location.exact:\\\\\\\\isis\\\\inst$ +(NDXINSTR NDXUMENT)", 4L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:(\\\\\\\\isis\\\\inst$\\\\NDXINSTR \\\\\\\\isis\\\\inst$\\\\NDXUMENT)", 4L);
+		// Check location.exact case sensitivity
+		checkHits(datafileSearcher, datafileParser, "location.exact:\\\\\\\\isis\\\\inst$\\\\NDXINSTR\\\\Instrument\\\\data\\\\cycle_00_0", 2L);
+		checkHits(datafileSearcher, datafileParser, "location.exact:\\\\\\\\isis\\\\inst$\\\\ndxinstr\\\\instrument\\\\data\\\\cycle_00_0", 0L);
+		// Exemplar searches
+		checkHits(datafileSearcher, datafileParser, "+location:\"\\\\\\\\isis\\\\inst$\" +location:cycle_* +location:(NDXINSTR NDXUMENT) +location.fileName:LOG", 2L);
+		checkHits(datafileSearcher, datafileParser, "+\"\\\\\\\\isis\\\\inst$\" +cycle_* +(NDXINSTR NDXUMENT) +LOG", 2L);
 	}
 
 	@Test
@@ -441,7 +498,7 @@ public class TestLucene {
 		JsonObjectBuilder innerBuilder = Json.createObjectBuilder();
 		innerBuilder.add("text", text);
 		builder.add("query", innerBuilder);
-		SearchBucket bucket = new SearchBucket(lucene, SearchType.DATAFILE, builder.build(), null, null);
+		SearchBucket bucket = new SearchBucket(lucene, SearchType.DATAFILE, builder.build(), null, null, "/");
 		assertEquals(expected, bucket.query.toString());
 	}
 

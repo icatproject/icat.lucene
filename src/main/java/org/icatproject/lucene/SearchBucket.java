@@ -66,6 +66,7 @@ public class SearchBucket {
     }
 
     private Lucene lucene;
+    private String pathSeparator;
     public Map<String, List<IndexSearcher>> searcherMap;
     public String user;
     public Query query;
@@ -85,48 +86,52 @@ public class SearchBucket {
     /**
      * Creates an empty search bucket.
      * 
-     * @param lucene IcatLucene instance.
+     * @param lucene        IcatLucene instance.
+     * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
      */
-    public SearchBucket(Lucene lucene) {
+    public SearchBucket(Lucene lucene, String pathSeparator) {
         this.lucene = lucene;
+        this.pathSeparator = pathSeparator;
         searcherMap = new HashMap<>();
     }
 
     /**
      * Creates a new search from the provided request and Url parameters.
      * 
-     * @param lucene      IcatLucene instance.
-     * @param searchType  The SearchType determines how the query is built for
-     *                    specific entities.
-     * @param request     Incoming Http request containing the query as Json.
-     * @param sort        Sort criteria as a Json encoded string.
-     * @param searchAfter The last FieldDoc of a previous search, encoded as Json.
+     * @param lucene        IcatLucene instance.
+     * @param searchType    The SearchType determines how the query is built for
+     *                      specific entities.
+     * @param request       Incoming Http request containing the query as Json.
+     * @param sort          Sort criteria as a Json encoded string.
+     * @param searchAfter   The last FieldDoc of a previous search, encoded as Json.
+     * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
      * @throws LuceneException
      * @throws IOException
      * @throws QueryNodeException
      */
     public SearchBucket(Lucene lucene, SearchType searchType, HttpServletRequest request, String sort,
-            String searchAfter) throws LuceneException, IOException, QueryNodeException {
-        this(lucene, searchType, Json.createReader(request.getInputStream()).readObject(), sort, searchAfter);
+            String searchAfter, String pathSeparator) throws LuceneException, IOException, QueryNodeException {
+        this(lucene, searchType, Json.createReader(request.getInputStream()).readObject(), sort, searchAfter,
+                pathSeparator);
     }
 
     /**
      * Creates a new search from the provided request and Url parameters.
      * 
-     * @param lucene      IcatLucene instance.
-     * @param searchType  The SearchType determines how the query is built for
-     *                    specific entities.
-     * @param object      Incoming query as Json.
-     * @param sort        Sort criteria as a Json encoded string.
-     * @param searchAfter The last FieldDoc of a previous search, encoded as Json.
+     * @param lucene        IcatLucene instance.
+     * @param searchType    The SearchType determines how the query is built for
+     *                      specific entities.
+     * @param object        Incoming query as Json.
+     * @param sort          Sort criteria as a Json encoded string.
+     * @param searchAfter   The last FieldDoc of a previous search, encoded as Json.
+     * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
      * @throws LuceneException
      * @throws IOException
      * @throws QueryNodeException
      */
     public SearchBucket(Lucene lucene, SearchType searchType, JsonObject object, String sort,
-            String searchAfter) throws LuceneException, IOException, QueryNodeException {
-        this.lucene = lucene;
-        searcherMap = new HashMap<>();
+            String searchAfter, String pathSeparator) throws LuceneException, IOException, QueryNodeException {
+        this(lucene, pathSeparator);
         parseSort(sort);
         try {
             parseFields(object);
@@ -216,7 +221,7 @@ public class SearchBucket {
 
         String text = jsonQuery.getString("text", null);
         if (text != null) {
-            Query parsedQuery = DocumentMapping.datafileParser.parse(escapePath(text), null);
+            Query parsedQuery = DocumentMapping.getDatafileParser(pathSeparator).parse(escapePath(text), null);
             Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
             luceneQuery.add(lowercasedQuery, Occur.MUST);
         }
@@ -249,7 +254,7 @@ public class SearchBucket {
 
         String text = jsonQuery.getString("text", null);
         if (text != null) {
-            Query parsedQuery = DocumentMapping.datasetParser.parse(escapePath(text), null);
+            Query parsedQuery = DocumentMapping.getDatasetParser(pathSeparator).parse(escapePath(text), null);
             Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
             luceneQuery.add(lowercasedQuery, Occur.MUST);
         }
@@ -284,12 +289,12 @@ public class SearchBucket {
         if (text != null) {
             text = escapePath(text);
             Builder textBuilder = new BooleanQuery.Builder();
-            Query parsedQuery = DocumentMapping.investigationParser.parse(text, null);
+            Query parsedQuery = DocumentMapping.getInvestigationParser(pathSeparator).parse(text, null);
             Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
             textBuilder.add(lowercasedQuery, Occur.SHOULD);
 
             IndexSearcher sampleSearcher = lucene.getSearcher(searcherMap, "InvestigationSample");
-            parsedQuery = DocumentMapping.sampleParser.parse(text, null);
+            parsedQuery = DocumentMapping.getSampleParser(pathSeparator).parse(text, null);
             lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
             Query joinedSampleQuery = JoinUtil.createJoinQuery("investigation.id", false, "id", Long.class,
                     lowercasedQuery, sampleSearcher, ScoreMode.Avg);
@@ -314,7 +319,7 @@ public class SearchBucket {
         String userFullName = jsonQuery.getString("userFullName", null);
         if (userFullName != null) {
             BooleanQuery.Builder userFullNameQuery = new BooleanQuery.Builder();
-            Query parsedQuery = DocumentMapping.genericParser.parse(userFullName, "user.fullName");
+            Query parsedQuery = DocumentMapping.getParser(pathSeparator).parse(userFullName, "user.fullName");
             Query lowercasedQuery = lowercaseWildcardQueries(parsedQuery);
             userFullNameQuery.add(lowercasedQuery, Occur.MUST);
             IndexSearcher investigationUserSearcher = lucene.getSearcher(searcherMap, "InvestigationUser");
@@ -401,9 +406,10 @@ public class SearchBucket {
                     if (filterTarget.equals("sample") && target.equals("investigation")) {
                         nestedQuery = JoinUtil.createJoinQuery("investigation.id", false, "id", Long.class,
                                 dimensionQuery, nestedSearcher, ScoreMode.None);
-                    } else if (filterTarget.toLowerCase().equals("investigationinstrument") && !target.equals("investigation")) {
-                        nestedQuery = JoinUtil.createJoinQuery("investigation.id", false, "investigation.id", Long.class, dimensionQuery,
-                                nestedSearcher, ScoreMode.None);
+                    } else if (filterTarget.toLowerCase().equals("investigationinstrument")
+                            && !target.equals("investigation")) {
+                        nestedQuery = JoinUtil.createJoinQuery("investigation.id", false, "investigation.id",
+                                Long.class, dimensionQuery, nestedSearcher, ScoreMode.None);
                     } else {
                         nestedQuery = JoinUtil.createJoinQuery(target + ".id", false, "id", Long.class, dimensionQuery,
                                 nestedSearcher, ScoreMode.None);
@@ -953,7 +959,8 @@ public class SearchBucket {
      * criteria are supported, and will be applied in order.
      * 
      * @param sortString String representation of a JSON object with the field(s) to
-     *                   sort as keys, and the direction ("asc" or "desc") as value(s).
+     *                   sort as keys, and the direction ("asc" or "desc") as
+     *                   value(s).
      * @throws LuceneException If the value for any key isn't "asc" or "desc"
      */
     public void parseSort(String sortString) throws LuceneException {

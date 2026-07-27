@@ -61,7 +61,7 @@ public class Field {
             } else if (DocumentMapping.pathFields.contains(name)) {
                 document.add(new TextField(name, value, Store.YES));
                 document.add(new TextField(name + ".exact", value, Store.NO));
-                int index = value.lastIndexOf("/");
+                int index = value.lastIndexOf(pathSeparator);
                 if (index != -1) {
                     document.add(new TextField(name + ".fileName", value.substring(index + 1), Store.NO));
                 }
@@ -125,18 +125,35 @@ public class Field {
     private String name;
     private InnerField innerField;
     private boolean facetable;
+    private String pathSeparator;
+
+    /**
+     * Creates a wrapper for a Field without setting innerField. Should only be
+     * called internally.
+     * 
+     * @param name          Name of the field to be used on the Document
+     * @param facetFields   List of String field names which should be stored as a
+     *                      facetable keyword
+     * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
+     */
+    public Field(String name, List<String> facetFields, String pathSeparator) {
+        this.name = name;
+        this.pathSeparator = pathSeparator;
+        facetable = facetFields.contains(name);
+    }
 
     /**
      * Creates a wrapper for a Field.
      * 
-     * @param object JsonObject containing representations of multiple fields
-     * @param key    Key of a specific field in object
-     * @param name   Name of the field to be used on the Document
-     * @param facetFields List of String field names which should be stored as a facetable keyword
+     * @param object        JsonObject containing representations of multiple fields
+     * @param key           Key of a specific field in object
+     * @param name          Name of the field to be used on the Document
+     * @param facetFields   List of String field names which should be stored as a
+     *                      facetable keyword
+     * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
      */
-    public Field(JsonObject object, String key, String name, List<String> facetFields) {
-        this.name = name;
-        facetable = facetFields.contains(name);
+    public Field(JsonObject object, String key, String name, List<String> facetFields, String pathSeparator) {
+        this(name, facetFields, pathSeparator);
         if (DocumentMapping.doubleFields.contains(name)) {
             innerField = new InnerDoubleField(object.getJsonNumber(key).doubleValue());
         } else if (DocumentMapping.longFields.contains(name)) {
@@ -151,11 +168,11 @@ public class Field {
      * 
      * @param name        Name of the field to be used on the Document
      * @param value       String value of the field
-     * @param facetFields List of String field names which should be stored as a facetable keyword
+     * @param facetFields List of String field names which should be stored as a
+     *                    facetable keyword
      */
-    public Field(String name, String value, List<String> facetFields) {
-        this.name = name;
-        facetable = facetFields.contains(name);
+    public Field(String name, String value, List<String> facetFields, String pathSeparator) {
+        this(name, facetFields, pathSeparator);
         innerField = new InnerStringField(value);
     }
 
@@ -163,11 +180,11 @@ public class Field {
      * Creates a wrapper for a Field.
      * 
      * @param indexableField A Lucene IndexableField
-     * @param facetFields List of String fields which should be stored as a facetable keyword
+     * @param facetFields    List of String fields which should be stored as a
+     *                       facetable keyword
      */
-    public Field(IndexableField indexableField, List<String> facetFields) {
-        name = indexableField.name();
-        facetable = facetFields.contains(name);
+    public Field(IndexableField indexableField, List<String> facetFields, String pathSeparator) {
+        this(indexableField.name(), facetFields, pathSeparator);
         if (DocumentMapping.doubleFields.contains(name)) {
             innerField = new InnerDoubleField(indexableField.numericValue().doubleValue());
         } else if (DocumentMapping.longFields.contains(name)) {

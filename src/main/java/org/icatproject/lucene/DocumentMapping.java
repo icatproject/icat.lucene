@@ -31,9 +31,9 @@ public class DocumentMapping {
 		 *                      it is nested should be deleted wholesale or just have
 		 *                      its fields pruned.
 		 * @param fieldMapping  Fields that should be updated by this relationship. The
-		 * 						key and value will be the same for most fields, but for
-		 * 						some they will differ to allow fields to be flattened
-		 * 						across entities (e.g. dataset.name: name).
+		 *                      key and value will be the same for most fields, but for
+		 *                      some they will differ to allow fields to be flattened
+		 *                      across entities (e.g. dataset.name: name).
 		 */
 		public ParentRelationship(String parentName, String joiningField, boolean cascadeDelete,
 				Map<String, String> fieldMapping) {
@@ -66,7 +66,8 @@ public class DocumentMapping {
 	public static final Map<String, ParentRelationship[]> relationships = Map.ofEntries(
 			Map.entry("Instrument", new ParentRelationship[] {
 					new ParentRelationship("InvestigationInstrument", "instrument.id", true,
-							Map.of("instrument.name", "instrument.name", "instrument.fullName", "instrument.fullName")) }),
+							Map.of("instrument.name", "instrument.name", "instrument.fullName",
+									"instrument.fullName")) }),
 			Map.entry("User", new ParentRelationship[] {
 					new ParentRelationship("InvestigationUser", "user.id", true,
 							Map.of("user.name", "user.name", "user.fullName", "user.fullName")),
@@ -117,19 +118,10 @@ public class DocumentMapping {
 			Map.entry("Dataset", new ParentRelationship[] {
 					new ParentRelationship("Datafile", "dataset.id", true, Map.of("dataset.name", "name")) }));
 
-	public static final StandardQueryParser genericParser = buildParser();
-	public static final StandardQueryParser datafileParser = buildParser("name", "description", "location",
-			"location.fileName", "datafileFormat.name", "visitId", "sample.name", "sample.type.name", "doi");
-	public static final StandardQueryParser datasetParser = buildParser("name", "description", "sample.name",
-			"sample.type.name", "type.name", "visitId", "doi");
-	public static final StandardQueryParser investigationParser = buildParser("name", "visitId", "title", "summary",
-			"facility.name", "type.name", "doi");
-	public static final StandardQueryParser sampleParser = buildParser("sample.name", "sample.type.name");
-
-	private static StandardQueryParser buildParser(String... defaultFields) {
+	private static StandardQueryParser buildParser(String pathSeparator, String... defaultFields) {
 		HashMap<String, Analyzer> analyzerMap = new HashMap<>();
 		for (String pathField : pathFields) {
-			analyzerMap.put(pathField, new IcatSeparatorAnalyzer("/"));
+			analyzerMap.put(pathField, new IcatSeparatorAnalyzer(pathSeparator));
 			analyzerMap.put(pathField + ".exact", new KeywordAnalyzer());
 			analyzerMap.put(pathField + ".fileName", new IcatSeparatorAnalyzer("."));
 		}
@@ -143,5 +135,47 @@ public class DocumentMapping {
 		}
 
 		return parser;
+	}
+
+	/**
+	 * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
+	 * @return Generic parser without specific handling for a given set of fields
+	 */
+	public static StandardQueryParser getParser(String pathSeparator) {
+		return buildParser(pathSeparator);
+	}
+
+	/**
+	 * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
+	 * @return Datafile parser with specific handling for Datafile fields
+	 */
+	public static StandardQueryParser getDatafileParser(String pathSeparator) {
+		return buildParser(pathSeparator, "name", "description", "location", "location.fileName", "datafileFormat.name",
+				"visitId", "sample.name", "sample.type.name", "doi");
+	}
+
+	/**
+	 * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
+	 * @return Dataset parser with specific handling for Dataset fields
+	 */
+	public static StandardQueryParser getDatasetParser(String pathSeparator) {
+		return buildParser(pathSeparator, "name", "description", "sample.name", "sample.type.name", "type.name",
+				"visitId", "doi");
+	}
+
+	/**
+	 * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
+	 * @return Investigation parser with specific handling for Investigation fields
+	 */
+	public static StandardQueryParser getInvestigationParser(String pathSeparator) {
+		return buildParser(pathSeparator, "name", "visitId", "title", "summary", "facility.name", "type.name", "doi");
+	}
+
+	/**
+	 * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
+	 * @return Sample parser with specific handling for Sample fields
+	 */
+	public static StandardQueryParser getSampleParser(String pathSeparator) {
+		return buildParser(pathSeparator, "sample.name", "sample.type.name");
 	}
 }
