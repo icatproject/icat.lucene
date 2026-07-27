@@ -434,18 +434,6 @@ public class Lucene {
 	static final Logger logger = LoggerFactory.getLogger(Lucene.class);
 	private static final Marker fatal = MarkerFactory.getMarker("FATAL");
 	private static final HashMap<String, Analyzer> analyzerMap = new HashMap<>();
-	static {
-		for (String pathField : DocumentMapping.pathFields) {
-			analyzerMap.put(pathField, new IcatSeparatorAnalyzer("/"));
-			try {
-				Builder builder = CustomAnalyzer.builder().withTokenizer(PathHierarchyTokenizerFactory.class);
-				analyzerMap.put(pathField + ".exact", builder.build());
-			} catch (IOException e) {
-				logger.error("Could not initialize path hierarchy analyzer", e);
-			}
-			analyzerMap.put(pathField + ".fileName", new IcatSeparatorAnalyzer("."));
-		}
-	}
 	public static PerFieldAnalyzerWrapper analyzerWrapper = new PerFieldAnalyzerWrapper(new IcatSynonymAnalyzer(), analyzerMap);
 
 	private final FacetsConfig facetsConfig = new FacetsConfig();
@@ -455,11 +443,31 @@ public class Lucene {
 	private long luceneMaxShardSize;
 	private long maxSearchTimeSeconds;
 	private boolean aggregateFiles;
+	private String pathSeparator; 
 	private Map<String, IndexBucket> indexBuckets = new ConcurrentHashMap<>();
 	private Timer timer;
 
 	public List<String> facetFields = new ArrayList<>();
 	public IcatUnits icatUnits;
+
+	/**
+	 * Populate analyzerMap with field specific Analyzers
+	 * 
+	 * @param analyzerMap   Mapping of field names to their Analyzer
+     * @param pathSeparator Separator to use for filepath fields, e.g. `/` or `\`
+	 */
+	public static void populateAnalyzerMap(Map<String, Analyzer> analyzerMap, String pathSeparator) {
+		for (String pathField : DocumentMapping.pathFields) {
+			analyzerMap.put(pathField, new IcatSeparatorAnalyzer(pathSeparator));
+			try {
+				Builder builder = CustomAnalyzer.builder().withTokenizer(PathHierarchyTokenizerFactory.class, "delimiter", pathSeparator);
+				analyzerMap.put(pathField + ".exact", builder.build());
+			} catch (IOException e) {
+				logger.error("Could not initialize path hierarchy analyzer", e);
+			}
+			analyzerMap.put(pathField + ".fileName", new IcatSeparatorAnalyzer("."));
+		}
+	}
 
 	/**
 	 * return the version of the lucene server
@@ -869,7 +877,7 @@ public class Lucene {
 		for (String joinedEntityName : search.joinedFields.keySet()) {
 			List<IndexSearcher> searchers = getSearchers(search.searcherMap, joinedEntityName);
 			List<ShardBucket> shards = getShards(joinedEntityName);
-			SearchBucket joinedSearch = new SearchBucket(this);
+			SearchBucket joinedSearch = new SearchBucket(this, pathSeparator);
 			String fld;
 			IndexableField indexableField;
 			if (joinedEntityName.toLowerCase().contains("investigation")) {
@@ -962,7 +970,7 @@ public class Lucene {
 			@QueryParam("maxLabels") int maxLabels, @QueryParam("sort") String sort) throws LuceneException {
 		SearchBucket search = null;
 		try {
-			search = new SearchBucket(this, SearchType.GENERIC, request, sort, null);
+			search = new SearchBucket(this, SearchType.GENERIC, request, sort, null, pathSeparator);
 			return luceneFacetResult(entityName, search, searchAfter, maxResults, maxLabels);
 		} catch (IOException | QueryNodeException e) {
 			logger.error("Error", e);
@@ -1067,6 +1075,10 @@ public class Lucene {
 			maxSearchTimeSeconds = props.has("maxSearchTimeSeconds") ? props.getPositiveLong("maxSearchTimeSeconds")
 					: 5;
 			aggregateFiles = props.getBoolean("aggregateFiles", false);
+			pathSeparator = props.getString("pathSeparator", "/");
+			if (pathSeparator.length() > 0) {
+				throw new Exception(pathSeparator + " must be a single character");
+			}
 
 			initTimer();
 
@@ -1077,6 +1089,7 @@ public class Lucene {
 			for (String facetField : facetFieldsString.split("\\s+")) {
 				facetFields.add(facetField);
 			}
+			populateAnalyzerMap(analyzerMap, pathSeparator);
 		} catch (Exception e) {
 			logger.error(fatal, e.getMessage());
 			throw new IllegalStateException(e.getMessage());
@@ -1412,7 +1425,7 @@ public class Lucene {
 			SearchType searchType) throws LuceneException {
 		SearchBucket search = null;
 		try {
-			search = new SearchBucket(this, searchType, request, sort, searchAfter);
+			search = new SearchBucket(this, searchType, request, sort, searchAfter, pathSeparator);
 			return luceneSearchResult(searchType.toString(), search, searchAfter, maxResults);
 		} catch (IOException | QueryNodeException e) {
 			logger.error("Error", e);
@@ -1631,7 +1644,7 @@ public class Lucene {
 	public Document parseDocument(JsonObject json) {
 		Document document = new Document();
 		for (String key : json.keySet()) {
-			Field field = new Field(json, key, key, facetFields);
+			Field field = new Field(json, key, key, facetFields, pathSeparator);
 			field.addToDocument(document);
 			convertUnits(json, document, key);
 		}
@@ -1711,13 +1724,13 @@ public class Lucene {
 			String fieldName = field.name();
 			String key = fieldMapping.getOrDefault(fieldName, null);
 			if (key != null && json.containsKey(key)) {
-				Field jsonField = new Field(json, key, fieldName, facetFields);
+				Field jsonField = new Field(json, key, fieldName, facetFields, pathSeparator);
 				jsonField.addToDocument(newDocument);
 				hasNewUnits = hasNewUnits || convertUnits(json, newDocument, fieldName);
 			} else if (fieldName.endsWith("SI")) {
-				fieldsSI.add(new Field(field, facetFields));
+				fieldsSI.add(new Field(field, facetFields, pathSeparator));
 			} else {
-				Field oldField = new Field(field, facetFields);
+				Field oldField = new Field(field, facetFields, pathSeparator);
 				oldField.addToDocument(newDocument);
 			}
 		}
@@ -1742,7 +1755,7 @@ public class Lucene {
 		Document newDocument = new Document();
 		for (IndexableField field : oldDocument.getFields()) {
 			if (!fields.contains(field.name())) {
-				Field fieldToAdd = new Field(field, facetFields);
+				Field fieldToAdd = new Field(field, facetFields, pathSeparator);
 				fieldToAdd.addToDocument(newDocument);
 			}
 		}

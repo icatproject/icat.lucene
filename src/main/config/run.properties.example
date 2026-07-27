@@ -16,3 +16,5 @@ maxSearchTimeSeconds = 5
 facetFields    = datafileFormat.name instrument.name sample.type.name stringValue technique.name type.name
 # Aggregate file sizes and counts in real time (this will have a performance impact on write operations)
 aggregateFiles = false
+# Separator for filepaths to used when splitting the Datafile.location field
+pathSeparator = /
