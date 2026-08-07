@@ -1076,7 +1076,7 @@ public class Lucene {
 					: 5;
 			aggregateFiles = props.getBoolean("aggregateFiles", false);
 			pathSeparator = props.getString("pathSeparator", "/");
-			if (pathSeparator.length() > 0) {
+			if (pathSeparator.length() != 1) {
 				throw new Exception(pathSeparator + " must be a single character");
 			}
 
